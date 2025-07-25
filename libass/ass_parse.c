@@ -20,6 +20,7 @@
 #include "ass_compat.h"
 
 #include <stdio.h>
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
@@ -27,6 +28,23 @@
 #include "ass_library.h"
 #include "ass_render.h"
 #include "ass_parse.h"
+
+typedef enum {
+    GC_OTHER = 0,
+    GC_CR,
+    GC_LF,
+    GC_CONTROL,
+    GC_EXTEND,
+    GC_ZWJ,
+    GC_REGIONAL_INDICATOR,
+    GC_PREPEND,
+    GC_SPACINGMARK,
+    GC_L,
+    GC_V,
+    GC_T,
+    GC_LV,
+    GC_LVT
+} GraphemeCategory; // Unicode categories for grapheme cluster boundary detection
 
 #define MAX_VALID_NARGS 7
 #define MAX_BE 127
@@ -75,6 +93,206 @@ static inline int mystrcmp(char **p, const char *sample)
         return 1;
     }
     return 0;
+}
+
+static GraphemeCategory get_grapheme_category(unsigned codepoint)
+{
+    // CR (U+000D)
+    if (codepoint == 0x000D) return GC_CR;
+
+    // LF (U+000A)
+    if (codepoint == 0x000A) return GC_LF;
+
+    // Control characters (excluding CR and LF)
+    if (codepoint < 0x20 || (codepoint >= 0x7F && codepoint < 0xA0)) return GC_CONTROL;
+
+    // ZWJ (Zero Width Joiner) - U+200D
+    if (codepoint == 0x200D) return GC_ZWJ;
+
+    // Regional Indicator Symbols (U+1F1E6..U+1F1FF)
+    if (codepoint >= 0x1F1E6 && codepoint <= 0x1F1FF) return GC_REGIONAL_INDICATOR;
+
+    // Extend category - combining marks and other extending characters
+    // This covers the most common combining mark ranges
+    if ((codepoint >= 0x0300 && codepoint <= 0x036F) ||  // Combining Diacritical Marks
+        (codepoint >= 0x0483 && codepoint <= 0x0489) ||  // Combining Cyrillic
+        (codepoint >= 0x0591 && codepoint <= 0x05BD) ||  // Hebrew accents
+        (codepoint >= 0x05BF && codepoint <= 0x05BF) ||  // Hebrew point
+        (codepoint >= 0x05C1 && codepoint <= 0x05C2) ||  // Hebrew points
+        (codepoint >= 0x05C4 && codepoint <= 0x05C5) ||  // Hebrew marks
+        (codepoint >= 0x05C7 && codepoint <= 0x05C7) ||  // Hebrew point
+        (codepoint >= 0x0610 && codepoint <= 0x061A) ||  // Arabic marks
+        (codepoint >= 0x064B && codepoint <= 0x065F) ||  // Arabic marks
+        (codepoint >= 0x0670 && codepoint <= 0x0670) ||  // Arabic letter
+        (codepoint >= 0x06D6 && codepoint <= 0x06DC) ||  // Arabic marks
+        (codepoint >= 0x06DF && codepoint <= 0x06E4) ||  // Arabic marks
+        (codepoint >= 0x06E7 && codepoint <= 0x06E8) ||  // Arabic marks
+        (codepoint >= 0x06EA && codepoint <= 0x06ED) ||  // Arabic marks
+        (codepoint >= 0x0711 && codepoint <= 0x0711) ||  // Syriac letter
+        (codepoint >= 0x0730 && codepoint <= 0x074A) ||  // Syriac points
+        (codepoint >= 0x07A6 && codepoint <= 0x07B0) ||  // Thaana marks
+        (codepoint >= 0x07EB && codepoint <= 0x07F3) ||  // NKo marks
+        (codepoint >= 0x0816 && codepoint <= 0x0819) ||  // Samaritan marks
+        (codepoint >= 0x081B && codepoint <= 0x0823) ||  // Samaritan marks
+        (codepoint >= 0x0825 && codepoint <= 0x0827) ||  // Samaritan marks
+        (codepoint >= 0x0829 && codepoint <= 0x082D) ||  // Samaritan marks
+        (codepoint >= 0x0859 && codepoint <= 0x085B) ||  // Mandaic marks
+        (codepoint >= 0x08E3 && codepoint <= 0x0902) ||  // Arabic/Devanagari marks
+        (codepoint >= 0x093A && codepoint <= 0x093A) ||  // Devanagari vowel
+        (codepoint >= 0x093C && codepoint <= 0x093C) ||  // Devanagari sign
+        (codepoint >= 0x0941 && codepoint <= 0x0948) ||  // Devanagari vowels
+        (codepoint >= 0x094D && codepoint <= 0x094D) ||  // Devanagari sign
+        (codepoint >= 0x0951 && codepoint <= 0x0957) ||  // Devanagari accents
+        (codepoint >= 0x0962 && codepoint <= 0x0963) ||  // Devanagari vowels
+        (codepoint >= 0x0981 && codepoint <= 0x0981) ||  // Bengali sign
+        (codepoint >= 0x09BC && codepoint <= 0x09BC) ||  // Bengali sign
+        (codepoint >= 0x09C1 && codepoint <= 0x09C4) ||  // Bengali vowels
+        (codepoint >= 0x09CD && codepoint <= 0x09CD) ||  // Bengali sign
+        (codepoint >= 0x09E2 && codepoint <= 0x09E3) ||  // Bengali vowels
+        (codepoint >= 0x0E31 && codepoint <= 0x0E31) ||  // Thai character Mai Han-Akat
+        (codepoint >= 0x0E34 && codepoint <= 0x0E3A) ||  // Thai vowel signs and tone marks
+        (codepoint >= 0x0E47 && codepoint <= 0x0E4E) ||  // Thai tone marks and signs
+        (codepoint >= 0x0EB1 && codepoint <= 0x0EB1) ||  // Lao vowel sign Mai Kan
+        (codepoint >= 0x0EB4 && codepoint <= 0x0EBC) ||  // Lao vowel signs and tone marks
+        (codepoint >= 0x0EC8 && codepoint <= 0x0ECD) ||  // Lao tone marks
+        (codepoint >= 0x1AB0 && codepoint <= 0x1AFF) ||  // Combining Diacritical Marks Extended
+        (codepoint >= 0x1DC0 && codepoint <= 0x1DFF) ||  // Combining Diacritical Marks Supplement
+        (codepoint >= 0x20D0 && codepoint <= 0x20FF) ||  // Combining Diacritical Marks for Symbols
+        (codepoint >= 0xFE20 && codepoint <= 0xFE2F) ||  // Combining Half Marks
+        (codepoint >= 0x101FD && codepoint <= 0x101FD) || // Phaistos disc sign
+        (codepoint >= 0x102E0 && codepoint <= 0x102E0) || // Coptic epact thousands mark
+        (codepoint >= 0x10376 && codepoint <= 0x1037A) || // Combining old permic letters
+        (codepoint >= 0x10A01 && codepoint <= 0x10A03) || // Kharoshthi length mark
+        (codepoint >= 0x10A05 && codepoint <= 0x10A06) || // Kharoshthi length mark
+        (codepoint >= 0x10A0C && codepoint <= 0x10A0F) || // Kharoshthi vowel length mark
+        (codepoint >= 0x10A38 && codepoint <= 0x10A3A) || // Kharoshthi sign
+        (codepoint >= 0x10A3F && codepoint <= 0x10A3F) || // Kharoshthi virama
+        (codepoint >= 0x1D167 && codepoint <= 0x1D169) || // Musical symbol
+        (codepoint >= 0x1D17B && codepoint <= 0x1D182) || // Musical symbol
+        (codepoint >= 0x1D185 && codepoint <= 0x1D18B) || // Musical symbol
+        (codepoint >= 0x1D1AA && codepoint <= 0x1D1AD) || // Musical symbol
+        (codepoint >= 0x1D242 && codepoint <= 0x1D244)) { // Combining Greek musical symbol
+        return GC_EXTEND;
+    }
+
+    // Hangul syllables
+    if (codepoint >= 0xAC00 && codepoint <= 0xD7AF) {
+        // Hangul syllable decomposition
+        unsigned sindex = codepoint - 0xAC00;
+        if (sindex % 28 == 0) return GC_LV;  // LV syllable
+        else return GC_LVT;  // LVT syllable
+    }
+
+    // Hangul Jamo
+    if (codepoint >= 0x1100 && codepoint <= 0x115F) return GC_L;  // Leading consonants
+    if (codepoint >= 0x1160 && codepoint <= 0x11A7) return GC_V;  // Vowels
+    if (codepoint >= 0x11A8 && codepoint <= 0x11FF) return GC_T;  // Trailing consonants
+
+    // Additional Hangul Jamo ranges
+    if (codepoint >= 0xA960 && codepoint <= 0xA97C) return GC_L;  // Hangul Jamo Extended-A
+    if (codepoint >= 0xD7B0 && codepoint <= 0xD7C6) return GC_V;  // Hangul Jamo Extended-B
+    if (codepoint >= 0xD7CB && codepoint <= 0xD7FB) return GC_T;  // Hangul Jamo Extended-B
+
+    // SpacingMark - characters that are spacing but still part of the same grapheme
+    if ((codepoint >= 0x0903 && codepoint <= 0x0903) ||  // Devanagari sign
+        (codepoint >= 0x093B && codepoint <= 0x093B) ||  // Devanagari vowel sign
+        (codepoint >= 0x093E && codepoint <= 0x0940) ||  // Devanagari vowel signs
+        (codepoint >= 0x0949 && codepoint <= 0x094C) ||  // Devanagari vowel signs
+        (codepoint >= 0x094E && codepoint <= 0x094F) ||  // Devanagari vowel signs
+        (codepoint >= 0x0982 && codepoint <= 0x0983) ||  // Bengali signs
+        (codepoint >= 0x09BE && codepoint <= 0x09C0) ||  // Bengali vowel signs
+        (codepoint >= 0x09C7 && codepoint <= 0x09C8) ||  // Bengali vowel signs
+        (codepoint >= 0x09CB && codepoint <= 0x09CC) ||  // Bengali vowel signs
+        (codepoint >= 0x09D7 && codepoint <= 0x09D7) ||  // Bengali au length mark
+        (codepoint >= 0x0E33 && codepoint <= 0x0E33) ||  // Thai character Sara Am
+        (codepoint >= 0x0EB3 && codepoint <= 0x0EB3)) {  // Lao vowel sign Am
+        return GC_SPACINGMARK;
+    }
+
+    // Prepend characters
+    if ((codepoint >= 0x0600 && codepoint <= 0x0605) ||  // Arabic number signs
+        (codepoint >= 0x06DD && codepoint <= 0x06DD) ||  // Arabic end of ayah
+        (codepoint >= 0x070F && codepoint <= 0x070F) ||  // Syriac abbreviation mark
+        (codepoint >= 0x08E2 && codepoint <= 0x08E2) ||  // Arabic disputed end of ayah
+        (codepoint >= 0x110BD && codepoint <= 0x110BD)) { // Kaithi number sign
+        return GC_PREPEND;
+    }
+
+    return GC_OTHER;
+}
+
+/**
+ * \brief Check if there's a grapheme cluster boundary between two code points
+ */
+static bool is_grapheme_boundary(unsigned prev, unsigned curr)
+{
+    GraphemeCategory prev_cat = get_grapheme_category(prev);
+    GraphemeCategory curr_cat = get_grapheme_category(curr);
+
+    // GB1: Break at start of text
+    if (prev == 0) return true;
+
+    // GB2: Break at end of text
+    if (curr == 0) return true;
+
+    // GB3: Do not break between CR and LF
+    if (prev_cat == GC_CR && curr_cat == GC_LF) return false;
+
+    // GB4: Break before and after controls
+    if (prev_cat == GC_CONTROL || prev_cat == GC_CR || prev_cat == GC_LF) return true;
+    if (curr_cat == GC_CONTROL || curr_cat == GC_CR || curr_cat == GC_LF) return true;
+
+    // GB5: Do not break before extending characters or ZWJ
+    if (curr_cat == GC_EXTEND || curr_cat == GC_ZWJ) return false;
+
+    // GB6: Do not break before SpacingMarks
+    if (curr_cat == GC_SPACINGMARK) return false;
+    
+    // GB7: Do not break after Prepend characters
+    if (prev_cat == GC_PREPEND) return false;
+
+    // GB9: Do not break within emoji flag sequences (regional indicator pairs)
+    if (prev_cat == GC_REGIONAL_INDICATOR && curr_cat == GC_REGIONAL_INDICATOR) return false;
+
+    // Hangul syllable rules (GB12, GB13, GB14)
+    if (prev_cat == GC_L && (curr_cat == GC_L || curr_cat == GC_V || curr_cat == GC_LV || curr_cat == GC_LVT)) return false;
+    if ((prev_cat == GC_LV || prev_cat == GC_V) && (curr_cat == GC_V || curr_cat == GC_T)) return false;
+    if ((prev_cat == GC_LVT || prev_cat == GC_T) && curr_cat == GC_T) return false;
+
+    // GB999: Otherwise break everywhere
+    return true;
+}
+
+// Get the next grapheme cluster from a UTF-8 string
+static unsigned ass_get_next_grapheme_cluster(char **str, char *cluster_end)
+{
+    char *p = *str;
+    unsigned first_codepoint = 0;
+    unsigned prev_codepoint = 0;
+    unsigned curr_codepoint;
+    char *cluster_start = p;
+
+    if (!*p) return 0;
+
+    // Get the first code point of the cluster
+    first_codepoint = ass_utf8_get_char(&p);
+    prev_codepoint = first_codepoint;
+
+    // Continue reading code points until we hit a grapheme boundary
+    while (*p) {
+        char *next_p = p;
+        curr_codepoint = ass_utf8_get_char(&next_p);
+        
+        if (is_grapheme_boundary(prev_codepoint, curr_codepoint)) {
+            break;
+        }
+        
+        p = next_p;
+        prev_codepoint = curr_codepoint;
+    }
+
+    *str = p;
+    return first_codepoint;
 }
 
 /**
@@ -1117,6 +1335,8 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
 {
     char *p = *str;
     unsigned chr;
+    char cluster_end[16];  // Buffer to store cluster end position info
+    
     if (*p == '\t') {
         ++p;
         *str = p;
@@ -1146,7 +1366,7 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
             return '}';
         }
     }
-    chr = ass_utf8_get_char((char **) &p);
+    chr = ass_get_next_grapheme_cluster((char **) &p, cluster_end);
     *str = p;
     return chr;
 }
