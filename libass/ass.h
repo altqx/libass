@@ -617,6 +617,34 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
 
+/**
+ * 
+ * \brief Callback used to observe positioned glyph runs after shaping/layout
+ * and before bitmap rasterization.
+ *
+ * This is an experimental extension used by AkariSub's HarfBuzz GPU pipeline.
+ * Coordinates and advances are in screen pixels after layout.
+ */
+typedef void (*ASS_GlyphRunCallback)(void *user_data,
+                                     const ASS_Event *event,
+                                     int glyph_index,
+                                     const void *font_handle,
+                                     int face_index,
+                                     int glyph_id,
+                                     int x,
+                                     int y,
+                                     int advance_x,
+                                     int advance_y,
+                                     uint32_t primary_color_rgba);
+
+/**
+ * \brief Register a glyph-run callback invoked during ass_render_frame().
+ * 
+ * Passing NULL disables callback delivery.
+ */
+void ass_set_glyph_run_callback(ASS_Renderer *priv,
+                                ASS_GlyphRunCallback callback,
+                                void *user_data);
 
 /*
  * The following functions operate on track objects and do not need

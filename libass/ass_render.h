@@ -338,6 +338,9 @@ struct ass_renderer {
 
     BitmapEngine engine;
 
+    ASS_GlyphRunCallback glyph_run_callback;
+    void *glyph_run_callback_user_data;
+
     ASS_Style user_override_style;
 };
 

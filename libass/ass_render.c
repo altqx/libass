@@ -3014,6 +3014,30 @@ ass_render_event(RenderContext *state, ASS_Event *event,
 
     calculate_rotation_params(state, &bbox, device_x, device_y);
 
+    if (render_priv->glyph_run_callback) {
+        int device_x_d6 = double_to_d6(device_x);
+        int device_y_d6 = double_to_d6(device_y);
+        for (int i = 0; i < text_info->length; i++) {
+            GlyphInfo *info = text_info->glyphs + i;
+            if (info->skip)
+                continue;
+            for (GlyphInfo *cur = info; cur; cur = cur->next) {
+                render_priv->glyph_run_callback(
+                    render_priv->glyph_run_callback_user_data,
+                    event,
+                    i,
+                    cur->font->hb_fonts[cur->face_index],
+                    cur->face_index,
+                    cur->glyph_index,
+                    d6_to_int(cur->pos.x + device_x_d6),
+                    d6_to_int(cur->pos.y + device_y_d6),
+                    d6_to_int(cur->cluster_advance.x),
+                    d6_to_int(cur->cluster_advance.y),
+                    cur->c[0]);
+            }
+        }
+    }
+
     render_and_combine_glyphs(state, device_x, device_y);
 
     memset(event_images, 0, sizeof(*event_images));

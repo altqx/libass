@@ -207,6 +207,14 @@ void ass_set_cache_limits(ASS_Renderer *render_priv, int glyph_max,
     render_priv->cache.composite_max_size = composite_cache;
 }
 
+void ass_set_glyph_run_callback(ASS_Renderer *priv,
+                                ASS_GlyphRunCallback callback,
+                                void *user_data)
+{
+    priv->glyph_run_callback = callback;
+    priv->glyph_run_callback_user_data = user_data;
+}
+
 ASS_FontProvider *
 ass_create_font_provider(ASS_Renderer *priv, ASS_FontProviderFuncs *funcs,
                          void *data)
