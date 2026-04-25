@@ -270,7 +270,6 @@ static unsigned ass_get_next_grapheme_cluster(char **str)
     unsigned first_codepoint = 0;
     unsigned prev_codepoint = 0;
     unsigned curr_codepoint;
-    char *cluster_start = p;
 
     if (!*p) return 0;
 
