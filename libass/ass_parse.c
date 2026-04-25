@@ -263,8 +263,8 @@ static bool is_grapheme_boundary(unsigned prev, unsigned curr)
     return true;
 }
 
-// Get the next grapheme cluster from a UTF-8 string
-static unsigned ass_get_next_grapheme_cluster(char **str, char *cluster_end)
+// Get next codepoint while preserving grapheme-related parsing helpers.
+static unsigned ass_get_next_grapheme_cluster(char **str)
 {
     char *p = *str;
     unsigned first_codepoint = 0;
@@ -276,6 +276,7 @@ static unsigned ass_get_next_grapheme_cluster(char **str, char *cluster_end)
 
     // Get the first code point of the cluster
     first_codepoint = ass_utf8_get_char(&p);
+    char *next_char = p;
     prev_codepoint = first_codepoint;
 
     // Continue reading code points until we hit a grapheme boundary
@@ -291,7 +292,7 @@ static unsigned ass_get_next_grapheme_cluster(char **str, char *cluster_end)
         prev_codepoint = curr_codepoint;
     }
 
-    *str = p;
+    *str = next_char;
     return first_codepoint;
 }
 
@@ -1335,7 +1336,6 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
 {
     char *p = *str;
     unsigned chr;
-    char cluster_end[16];  // Buffer to store cluster end position info
     
     if (*p == '\t') {
         ++p;
@@ -1366,7 +1366,7 @@ unsigned ass_get_next_char(RenderContext *state, char **str)
             return '}';
         }
     }
-    chr = ass_get_next_grapheme_cluster((char **) &p, cluster_end);
+    chr = ass_get_next_grapheme_cluster((char **) &p);
     *str = p;
     return chr;
 }
