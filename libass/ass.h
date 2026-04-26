@@ -631,11 +631,18 @@ typedef void (*ASS_GlyphRunCallback)(void *user_data,
                                      const void *font_handle,
                                      int face_index,
                                      int glyph_id,
-                                     int x,
-                                     int y,
-                                     int advance_x,
-                                     int advance_y,
-                                     uint32_t primary_color_rgba);
+                                     double x,
+                                     double y,
+                                     double advance_x,
+                                     double advance_y,
+                                     uint32_t primary_color_rgba,
+                                     uint32_t outline_color_rgba,
+                                     uint32_t shadow_color_rgba,
+                                     double border_x,
+                                     double border_y,
+                                     double shadow_x,
+                                     double shadow_y,
+                                     double blur);
 
 /**
  * \brief Register a glyph-run callback invoked during ass_render_frame().

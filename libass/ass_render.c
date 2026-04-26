@@ -3034,11 +3034,18 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                     cur->font->hb_fonts[cur->face_index],
                     cur->face_index,
                     cur->glyph_index,
-                    d6_to_int(cur->pos.x + device_x_d6),
-                    d6_to_int(cur->pos.y + device_y_d6),
-                    d6_to_int(cur->cluster_advance.x),
-                    d6_to_int(cur->cluster_advance.y),
-                    cur->c[0]);
+                    d6_to_double(cur->pos.x + device_x_d6),
+                    d6_to_double(cur->pos.y + device_y_d6),
+                    d6_to_double(cur->cluster_advance.x),
+                    d6_to_double(cur->cluster_advance.y),
+                    cur->c[0],
+                    cur->c[2],
+                    cur->c[3],
+                    cur->border_x,
+                    cur->border_y,
+                    cur->shadow_x,
+                    cur->shadow_y,
+                    cur->blur);
             }
         }
     }
