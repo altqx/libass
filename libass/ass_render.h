@@ -219,6 +219,9 @@ struct render_context {
     ASS_Font *font;
     double font_size;
     int parsed_tags;
+    unsigned grapheme_pending[32];
+    int grapheme_pending_len;
+    int grapheme_pending_pos;
     int flags;                  // decoration flags (underline/strike-through)
 
     int alignment;              // alignment overrides go here; if zero, style value will be used

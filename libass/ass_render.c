@@ -2080,6 +2080,8 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
     ASS_Renderer *render_priv = state->renderer;
 
     char *p = event->Text, *q;
+    state->grapheme_pending_len = 0;
+    state->grapheme_pending_pos = 0;
 
     // Event parsing.
     while (true) {
@@ -2088,8 +2090,11 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
         // get next char, executing style override
         // this affects render_context
         unsigned code = 0;
-        while (*p) {
-            if ((*p == '{') && (q = strchr(p, '}'))) {
+        while (*p || state->grapheme_pending_pos < state->grapheme_pending_len) {
+            if (state->grapheme_pending_pos < state->grapheme_pending_len) {
+                code = ass_get_next_char(state, &p);
+                break;
+            } else if ((*p == '{') && (q = strchr(p, '}'))) {
                 p = ass_parse_tags(state, p, q, 1., false);
                 assert(*p == '}');
                 p++;
