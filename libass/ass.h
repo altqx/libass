@@ -623,7 +623,9 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
  * and before bitmap rasterization.
  *
  * This is an experimental extension used by AkariSub's HarfBuzz GPU pipeline.
- * Coordinates and advances are in screen pixels after layout.
+ * Coordinates and advances are in screen pixels after layout. Glyph extents
+ * remain in HarfBuzz blob coordinate space; glyph_scale_x/y convert those
+ * extents to screen pixels for quad placement.
  */
 typedef void (*ASS_GlyphRunCallback)(void *user_data,
                                      const ASS_Event *event,
@@ -635,6 +637,8 @@ typedef void (*ASS_GlyphRunCallback)(void *user_data,
                                      double y,
                                      double advance_x,
                                      double advance_y,
+                                     double glyph_scale_x,
+                                     double glyph_scale_y,
                                      uint32_t primary_color_rgba,
                                      uint32_t outline_color_rgba,
                                      uint32_t shadow_color_rgba,

@@ -3038,6 +3038,14 @@ ass_render_event(RenderContext *state, ASS_Event *event,
                     d6_to_double(cur->pos.y + device_y_d6),
                     d6_to_double(cur->cluster_advance.x),
                     d6_to_double(cur->cluster_advance.y),
+                    cur->font->faces[cur->face_index]->units_per_EM ?
+                        cur->font_size * cur->scale_x /
+                            cur->font->faces[cur->face_index]->units_per_EM :
+                        0.0,
+                    cur->font->faces[cur->face_index]->units_per_EM ?
+                        cur->font_size * cur->scale_y /
+                            cur->font->faces[cur->face_index]->units_per_EM :
+                        0.0,
                     cur->c[0],
                     cur->c[2],
                     cur->c[3],
