@@ -1884,48 +1884,6 @@ wrap_lines_rebalance(RenderContext *state, double max_text_width, char *unibrks)
 #undef DIFF
 }
 
-static void
-wrap_lines_measure(RenderContext *state, char *unibrks)
-{
-    TextInfo *text_info = &state->text_info;
-    int cur_line = 1;
-    int i = 0;
-
-    while (i < text_info->length && text_info->glyphs[i].skip)
-        ++i;
-
-    if (i == text_info->length) {
-        text_info->lines[0].len = 0;
-        text_info->lines[0].offset = 0;
-        return;
-    }
-
-    double pen_shift_x = d6_to_double(-text_info->glyphs[i].pos.x);
-    double pen_shift_y = 0.;
-
-    for (i = 0; i < text_info->length; ++i) {
-        GlyphInfo *cur = text_info->glyphs + i;
-
-        if (cur->linebreak) {
-            while (i < text_info->length - 1 && cur->skip && !FORCEBREAK(cur->symbol, i))
-                cur = text_info->glyphs + ++i;
-            double height =
-                text_info->lines[cur_line - 1].desc +
-                text_info->lines[cur_line].asc;
-            text_info->lines[cur_line - 1].len = i -
-                text_info->lines[cur_line - 1].offset;
-            text_info->lines[cur_line].offset = i;
-            cur_line++;
-            pen_shift_x = d6_to_double(-cur->pos.x);
-            pen_shift_y += height + state->renderer->settings.line_spacing;
-        }
-        cur->pos.x += double_to_d6(pen_shift_x);
-        cur->pos.y += double_to_d6(pen_shift_y);
-    }
-    text_info->lines[cur_line - 1].len =
-        text_info->length - text_info->lines[cur_line - 1].offset;
-}
-
 #undef ALLOWBREAK
 #undef FORCEBREAK
 
@@ -1972,7 +1930,6 @@ wrap_lines_smart(RenderContext *state, double max_text_width)
 
     trim_whitespace(state);
     measure_text(state);
-    wrap_lines_measure(state, unibrks);
 }
 
 /**
