@@ -24,6 +24,98 @@
 #include "ass_bitmap_engine.h"
 #include "x86/cpuid.h"
 
+#if defined(__wasm_simd128__)
+#include <wasm_simd128.h>
+
+/*
+ * WebAssembly SIMD128 implementations of the bitmap blend kernels.
+ *
+ * libass ships hand-written SSE2/AVX2/NEON for these, but none of it is built
+ * for wasm32, so the scalar `_c` path runs on every glyph composite. These
+ * are bit-exact ports of the `_c` functions in c/c_blend_bitmaps.c: each
+ * processes 16 bytes per iteration with a scalar tail for width % 16.
+ */
+
+void ass_add_bitmaps_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                          const uint8_t *restrict src, ptrdiff_t src_stride,
+                          size_t width, size_t height)
+{
+    size_t w16 = width & ~(size_t) 15;
+    uint8_t *end = dst + dst_stride * height;
+    while (dst < end) {
+        size_t x = 0;
+        for (; x < w16; x += 16) {
+            // saturating 8-bit add == FFMIN(dst+src, 255)
+            v128_t d = wasm_v128_load(dst + x);
+            v128_t s = wasm_v128_load(src + x);
+            wasm_v128_store(dst + x, wasm_u8x16_add_sat(d, s));
+        }
+        for (; x < width; x++) {
+            unsigned out = dst[x] + src[x];
+            dst[x] = out < 255 ? out : 255;
+        }
+        dst += dst_stride;
+        src += src_stride;
+    }
+}
+
+// Shared helper: (a * b + 255) >> 8 over 16 bytes, narrowed back to u8.
+static inline v128_t mul255_round(v128_t a, v128_t b)
+{
+    const v128_t c255 = wasm_i16x8_splat(255);
+    v128_t lo = wasm_u16x8_extmul_low_u8x16(a, b);
+    v128_t hi = wasm_u16x8_extmul_high_u8x16(a, b);
+    lo = wasm_u16x8_shr(wasm_i16x8_add(lo, c255), 8);
+    hi = wasm_u16x8_shr(wasm_i16x8_add(hi, c255), 8);
+    return wasm_u8x16_narrow_i16x8(lo, hi);
+}
+
+void ass_imul_bitmaps_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                           const uint8_t *restrict src, ptrdiff_t src_stride,
+                           size_t width, size_t height)
+{
+    const v128_t c255 = wasm_u8x16_splat(255);
+    size_t w16 = width & ~(size_t) 15;
+    uint8_t *end = dst + dst_stride * height;
+    while (dst < end) {
+        size_t x = 0;
+        for (; x < w16; x += 16) {
+            // dst = (dst * (255 - src) + 255) >> 8
+            v128_t d = wasm_v128_load(dst + x);
+            v128_t inv = wasm_u8x16_sub_sat(c255, wasm_v128_load(src + x));
+            wasm_v128_store(dst + x, mul255_round(d, inv));
+        }
+        for (; x < width; x++)
+            dst[x] = (dst[x] * (255 - src[x]) + 255) >> 8;
+        dst += dst_stride;
+        src += src_stride;
+    }
+}
+
+void ass_mul_bitmaps_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                          const uint8_t *restrict src1, ptrdiff_t src1_stride,
+                          const uint8_t *restrict src2, ptrdiff_t src2_stride,
+                          size_t width, size_t height)
+{
+    size_t w16 = width & ~(size_t) 15;
+    uint8_t *end = dst + dst_stride * height;
+    while (dst < end) {
+        size_t x = 0;
+        for (; x < w16; x += 16) {
+            // dst = (src1 * src2 + 255) >> 8
+            v128_t a = wasm_v128_load(src1 + x);
+            v128_t b = wasm_v128_load(src2 + x);
+            wasm_v128_store(dst + x, mul255_round(a, b));
+        }
+        for (; x < width; x++)
+            dst[x] = (src1[x] * src2[x] + 255) >> 8;
+        dst  += dst_stride;
+        src1 += src1_stride;
+        src2 += src2_stride;
+    }
+}
+#endif
+
 
 #define RASTERIZER_PROTOTYPES(tile_size, suffix) \
     FillSolidTileFunc     ass_fill_solid_tile     ## tile_size ## _ ## suffix; \
@@ -200,5 +292,14 @@ BitmapEngine ass_bitmap_engine_init(unsigned mask)
     if (mask & ASS_FLAG_WIDE_STRIPE) {
         BLUR_FUNCTIONS(5, 32, c)
     }
+
+#if defined(__wasm_simd128__)
+    BitmapBlendFunc ass_add_bitmaps_wasm, ass_imul_bitmaps_wasm;
+    BitmapMulFunc ass_mul_bitmaps_wasm;
+    engine.add_bitmaps  = ass_add_bitmaps_wasm;
+    engine.imul_bitmaps = ass_imul_bitmaps_wasm;
+    engine.mul_bitmaps  = ass_mul_bitmaps_wasm;
+#endif
+
     return engine;
 }
