@@ -114,6 +114,191 @@ void ass_mul_bitmaps_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
         src2 += src2_stride;
     }
 }
+
+/*
+ * Gaussian blur kernels (alignment 16 / STRIPE_WIDTH 8 variant only, which is
+ * what ass_render selects without ASS_FLAG_WIDE_STRIPE).
+ *
+ * Only the "vertical" class is ported here: these operate on whole 8-wide
+ * stripes at a fixed lane offset, so they vectorize to one i16x8 (or a pair of
+ * i32x4 where intermediates exceed int16) with no cross-lane shuffles. They
+ * are bit-exact ports of the corresponding `_c` template instantiations and
+ * are validated byte-for-byte against them by build/simd_fuzz.c. The
+ * horizontal kernels need shifted/interleaved access and stay scalar C.
+ */
+#define SW 8  // STRIPE_WIDTH for alignment 16
+
+static int16_t zero_line_w[SW];
+
+static inline const int16_t *get_line_w(const int16_t *ptr, size_t offs, size_t size)
+{
+    return offs < size ? ptr + offs : zero_line_w;
+}
+
+void ass_stripe_unpack16_wasm(int16_t *restrict dst, const uint8_t *restrict src,
+                              ptrdiff_t src_stride, size_t width, size_t height)
+{
+    const v128_t one = wasm_i16x8_splat(1);
+    for (size_t y = 0; y < height; y++) {
+        int16_t *ptr = dst;
+        for (size_t x = 0; x < width; x += SW) {
+            // ptr[k] = (uint16_t)(((src<<7)|(src>>1)) + 1) >> 1
+            v128_t s = wasm_u16x8_extend_low_u8x16(wasm_v128_load64_zero(src + x));
+            v128_t v = wasm_v128_or(wasm_i16x8_shl(s, 7), wasm_u16x8_shr(s, 1));
+            v = wasm_u16x8_shr(wasm_i16x8_add(v, one), 1);
+            wasm_v128_store(ptr, v);
+            ptr += SW * height;
+        }
+        dst += SW;
+        src += src_stride;
+    }
+}
+
+void ass_stripe_pack16_wasm(uint8_t *restrict dst, ptrdiff_t dst_stride,
+                            const int16_t *restrict src, size_t width, size_t height)
+{
+    const v128_t dither_even = wasm_i16x8_make(8, 40, 8, 40, 8, 40, 8, 40);
+    const v128_t dither_odd  = wasm_i16x8_make(56, 24, 56, 24, 56, 24, 56, 24);
+    for (size_t x = 0; x < width; x += SW) {
+        uint8_t *ptr = dst;
+        for (size_t y = 0; y < height; y++) {
+            // ptr[k] = (uint16_t)(src - (src>>8) + dither) >> 6
+            v128_t s = wasm_v128_load(src);
+            v128_t v = wasm_i16x8_sub(s, wasm_i16x8_shr(s, 8));
+            v = wasm_i16x8_add(v, (y & 1) ? dither_odd : dither_even);
+            v = wasm_u16x8_shr(v, 6);
+            wasm_v128_store64_lane(ptr, wasm_u8x16_narrow_i16x8(v, v), 0);
+            ptr += dst_stride;
+            src += SW;
+        }
+        dst += SW;
+    }
+    size_t left = dst_stride - ((width + SW - 1) & ~(size_t)(SW - 1));
+    for (size_t y = 0; y < height; y++) {
+        for (size_t x = 0; x < left; x++)
+            dst[x] = 0;
+        dst += dst_stride;
+    }
+}
+
+// shrink_func over an i32x4 lane group (intermediates exceed int16 range)
+static inline v128_t shrink4(v128_t p1p, v128_t p1n, v128_t z0p,
+                             v128_t z0n, v128_t n1p, v128_t n1n)
+{
+    v128_t r = wasm_i32x4_shr(wasm_i32x4_add(wasm_i32x4_add(p1p, p1n),
+                                             wasm_i32x4_add(n1p, n1n)), 1);
+    r = wasm_i32x4_shr(wasm_i32x4_add(wasm_i32x4_add(r, z0p), z0n), 1);
+    r = wasm_i32x4_shr(wasm_i32x4_add(wasm_i32x4_add(r, p1n), n1p), 1);
+    r = wasm_i32x4_add(wasm_i32x4_add(wasm_i32x4_add(r, z0p), z0n),
+                       wasm_i32x4_splat(2));
+    return wasm_i32x4_shr(r, 2);
+}
+
+void ass_shrink_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                            size_t src_width, size_t src_height)
+{
+    size_t dst_height = (src_height + 5) >> 1;
+    size_t step = SW * src_height;
+    for (size_t x = 0; x < src_width; x += SW) {
+        size_t offs = 0;
+        for (size_t y = 0; y < dst_height; y++) {
+            v128_t p1p = wasm_v128_load(get_line_w(src, offs - 4 * SW, step));
+            v128_t p1n = wasm_v128_load(get_line_w(src, offs - 3 * SW, step));
+            v128_t z0p = wasm_v128_load(get_line_w(src, offs - 2 * SW, step));
+            v128_t z0n = wasm_v128_load(get_line_w(src, offs - 1 * SW, step));
+            v128_t n1p = wasm_v128_load(get_line_w(src, offs - 0 * SW, step));
+            v128_t n1n = wasm_v128_load(get_line_w(src, offs + 1 * SW, step));
+            v128_t lo = shrink4(wasm_i32x4_extend_low_i16x8(p1p), wasm_i32x4_extend_low_i16x8(p1n),
+                                wasm_i32x4_extend_low_i16x8(z0p), wasm_i32x4_extend_low_i16x8(z0n),
+                                wasm_i32x4_extend_low_i16x8(n1p), wasm_i32x4_extend_low_i16x8(n1n));
+            v128_t hi = shrink4(wasm_i32x4_extend_high_i16x8(p1p), wasm_i32x4_extend_high_i16x8(p1n),
+                                wasm_i32x4_extend_high_i16x8(z0p), wasm_i32x4_extend_high_i16x8(z0n),
+                                wasm_i32x4_extend_high_i16x8(n1p), wasm_i32x4_extend_high_i16x8(n1n));
+            wasm_v128_store(dst, wasm_i16x8_narrow_i32x4(lo, hi));
+            dst  += SW;
+            offs += 2 * SW;
+        }
+        src += step;
+    }
+}
+
+void ass_expand_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                            size_t src_width, size_t src_height)
+{
+    const v128_t one = wasm_i16x8_splat(1);
+    size_t dst_height = 2 * src_height + 4;
+    size_t step = SW * src_height;
+    for (size_t x = 0; x < src_width; x += SW) {
+        size_t offs = 0;
+        for (size_t y = 0; y < dst_height; y += 2) {
+            v128_t p1 = wasm_v128_load(get_line_w(src, offs - 2 * SW, step));
+            v128_t z0 = wasm_v128_load(get_line_w(src, offs - 1 * SW, step));
+            v128_t n1 = wasm_v128_load(get_line_w(src, offs - 0 * SW, step));
+            // expand_func: all u16 arithmetic, values stay < 0x8000
+            v128_t r = wasm_u16x8_shr(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(p1, n1), 1), z0), 1);
+            v128_t rp = wasm_u16x8_shr(wasm_i16x8_add(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(r, p1), 1), z0), one), 1);
+            v128_t rn = wasm_u16x8_shr(wasm_i16x8_add(wasm_i16x8_add(wasm_u16x8_shr(wasm_i16x8_add(r, n1), 1), z0), one), 1);
+            wasm_v128_store(dst, rp);
+            wasm_v128_store(dst + SW, rn);
+            dst  += 2 * SW;
+            offs += 1 * SW;
+        }
+        src += step;
+    }
+}
+
+static inline void blur_vert_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                                  size_t src_width, size_t src_height,
+                                  const int16_t *restrict param, const int n)
+{
+    size_t dst_height = src_height + 2 * n;
+    size_t step = SW * src_height;
+    for (size_t x = 0; x < src_width; x += SW) {
+        size_t offs = 0;
+        for (size_t y = 0; y < dst_height; y++) {
+            v128_t acc_lo = wasm_i32x4_splat(0x8000);
+            v128_t acc_hi = acc_lo;
+            v128_t center = wasm_v128_load(get_line_w(src, offs - n * SW, step));
+            for (int i = n; i > 0; i--) {
+                v128_t l1 = wasm_v128_load(get_line_w(src, offs - (n + i) * SW, step));
+                v128_t l2 = wasm_v128_load(get_line_w(src, offs - (n - i) * SW, step));
+                v128_t pv = wasm_i16x8_splat(param[i - 1]);
+                v128_t d1 = wasm_i16x8_sub(l1, center);
+                v128_t d2 = wasm_i16x8_sub(l2, center);
+                acc_lo = wasm_i32x4_add(acc_lo, wasm_i32x4_add(
+                             wasm_i32x4_extmul_low_i16x8(d1, pv),
+                             wasm_i32x4_extmul_low_i16x8(d2, pv)));
+                acc_hi = wasm_i32x4_add(acc_hi, wasm_i32x4_add(
+                             wasm_i32x4_extmul_high_i16x8(d1, pv),
+                             wasm_i32x4_extmul_high_i16x8(d2, pv)));
+            }
+            // dst[k] = center[k] + (acc[k] >> 16)
+            v128_t lo = wasm_i32x4_add(wasm_i32x4_extend_low_i16x8(center), wasm_i32x4_shr(acc_lo, 16));
+            v128_t hi = wasm_i32x4_add(wasm_i32x4_extend_high_i16x8(center), wasm_i32x4_shr(acc_hi, 16));
+            wasm_v128_store(dst, wasm_i16x8_narrow_i32x4(lo, hi));
+            dst  += SW;
+            offs += SW;
+        }
+        src += step;
+    }
+}
+
+void ass_blur4_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                           size_t w, size_t h, const int16_t *restrict param)
+{ blur_vert_wasm(dst, src, w, h, param, 4); }
+void ass_blur5_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                           size_t w, size_t h, const int16_t *restrict param)
+{ blur_vert_wasm(dst, src, w, h, param, 5); }
+void ass_blur6_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                           size_t w, size_t h, const int16_t *restrict param)
+{ blur_vert_wasm(dst, src, w, h, param, 6); }
+void ass_blur7_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                           size_t w, size_t h, const int16_t *restrict param)
+{ blur_vert_wasm(dst, src, w, h, param, 7); }
+void ass_blur8_vert16_wasm(int16_t *restrict dst, const int16_t *restrict src,
+                           size_t w, size_t h, const int16_t *restrict param)
+{ blur_vert_wasm(dst, src, w, h, param, 8); }
+#undef SW
 #endif
 
 
@@ -294,11 +479,20 @@ BitmapEngine ass_bitmap_engine_init(unsigned mask)
     }
 
 #if defined(__wasm_simd128__)
-    BitmapBlendFunc ass_add_bitmaps_wasm, ass_imul_bitmaps_wasm;
-    BitmapMulFunc ass_mul_bitmaps_wasm;
     engine.add_bitmaps  = ass_add_bitmaps_wasm;
     engine.imul_bitmaps = ass_imul_bitmaps_wasm;
     engine.mul_bitmaps  = ass_mul_bitmaps_wasm;
+    if (!(mask & ASS_FLAG_WIDE_STRIPE)) {
+        engine.stripe_unpack = ass_stripe_unpack16_wasm;
+        engine.stripe_pack   = ass_stripe_pack16_wasm;
+        engine.shrink_vert   = ass_shrink_vert16_wasm;
+        engine.expand_vert   = ass_expand_vert16_wasm;
+        engine.blur_vert[0]  = ass_blur4_vert16_wasm;
+        engine.blur_vert[1]  = ass_blur5_vert16_wasm;
+        engine.blur_vert[2]  = ass_blur6_vert16_wasm;
+        engine.blur_vert[3]  = ass_blur7_vert16_wasm;
+        engine.blur_vert[4]  = ass_blur8_vert16_wasm;
+    }
 #endif
 
     return engine;
