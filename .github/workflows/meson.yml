@@ -70,7 +70,6 @@ jobs:
         shell: ${{ matrix.config.shell || 'bash' }}
 
     env:
-      VS: "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise"
       ART_SAMPLES: ${{ github.workspace }}/ext_art-samples
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
       SCCACHE_MAXSIZE: 200M
@@ -115,6 +114,15 @@ jobs:
           path: ${{ env.SCCACHE_DIR }}
           key: windows-msvc-${{ matrix.config.arch }}-${{ steps.get_time.outputs.timestamp }}
           restore-keys: windows-msvc-
+
+      - name: Find Visual Studio
+        if: matrix.config.msvc
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsPath) { throw "Could not find a Visual Studio installation" }
+          "VS=$vsPath"
+          "VS=$vsPath" >> $env:GITHUB_ENV
 
       - name: Install MSVC dependecies with choco
         if: matrix.config.msvc
