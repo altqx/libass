@@ -36,7 +36,7 @@ static inline int ilog2(uint32_t n)
 #ifdef __GNUC__
     return __builtin_clz(n) ^ 31;
 #elif defined(_MSC_VER)
-    int res;
+    unsigned long res;
     _BitScanReverse(&res, n);
     return res;
 #else
