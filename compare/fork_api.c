@@ -246,6 +246,36 @@ static int events_equal(const ASS_Track *a, const ASS_Track *b, const char *what
     return 1;
 }
 
+static int styles_equal(const ASS_Track *a, const ASS_Track *b, const char *what)
+{
+    if (a->n_styles != b->n_styles || a->default_style != b->default_style) {
+        CHECK(0, "%s: n_styles %d/%d default_style %d/%d", what,
+              a->n_styles, b->n_styles, a->default_style, b->default_style);
+        return 0;
+    }
+    for (int i = 0; i < a->n_styles; i++) {
+        const ASS_Style *x = a->styles + i, *y = b->styles + i;
+        if (!str_equal(x->Name, y->Name) || !str_equal(x->FontName, y->FontName) ||
+                x->FontSize != y->FontSize || x->PrimaryColour != y->PrimaryColour ||
+                x->SecondaryColour != y->SecondaryColour ||
+                x->OutlineColour != y->OutlineColour || x->BackColour != y->BackColour ||
+                x->Bold != y->Bold || x->Italic != y->Italic ||
+                x->Underline != y->Underline || x->StrikeOut != y->StrikeOut ||
+                x->ScaleX != y->ScaleX || x->ScaleY != y->ScaleY ||
+                x->Spacing != y->Spacing || x->Angle != y->Angle ||
+                x->BorderStyle != y->BorderStyle || x->Outline != y->Outline ||
+                x->Shadow != y->Shadow || x->Alignment != y->Alignment ||
+                x->MarginL != y->MarginL || x->MarginR != y->MarginR ||
+                x->MarginV != y->MarginV || x->Encoding != y->Encoding ||
+                x->treat_fontname_as_pattern != y->treat_fontname_as_pattern ||
+                x->Blur != y->Blur || x->Justify != y->Justify) {
+            CHECK(0, "%s: style %d differs", what, i);
+            return 0;
+        }
+    }
+    return 1;
+}
+
 /*
  * A script split into the text before the first Dialogue/Comment line of
  * [Events] (header) and the lines after it. Each line remembers whether a
@@ -781,6 +811,182 @@ static void test_splice(void)
         test_splice_script(scripts[i], i ? 60 : 300);
 }
 
+/* find the n-th Style line in the header: returns its start, *len its length */
+static char *find_style_line(const Script *s, int n, size_t *len)
+{
+    char *p = s->header;
+    while ((p = strstr(p, "Style:"))) {
+        if (p == s->header || p[-1] == '\n' || p[-1] == '\r' ||
+                (p - s->header == 3 && !memcmp(s->header, "\xef\xbb\xbf", 3))) {
+            if (!n--) {
+                *len = strcspn(p, "\r\n");
+                return p;
+            }
+        }
+        p++;
+    }
+    return NULL;
+}
+
+static void replace_style_line(Script *s, int n, const char *line)
+{
+    size_t old_len = 0;
+    char *at = find_style_line(s, n, &old_len);
+    if (!at)
+        return;
+    size_t off = at - s->header, hl = strlen(s->header), nl = strlen(line);
+    char *h = xmalloc(hl - old_len + nl + 1);
+    memcpy(h, s->header, off);
+    memcpy(h + off, line, nl);
+    memcpy(h + off + nl, s->header + off + old_len, hl - off - old_len + 1);
+    free(s->header);
+    s->header = h;
+}
+
+/* Style line with one field (not the name) changed */
+static char *mutate_style(const char *src, size_t len)
+{
+    static const char *const fonts[] = {
+        "Aileron", "Noto Sans", "Pixel Operator Mono", "ForkTest Bits", "NoSuchFont"
+    };
+    char fields[23][256];
+    int n = 0;
+    const char *p = src + 6;
+    const char *end = src + len;
+    while (*p == ' ')
+        p++;
+    while (n < 23) {
+        const char *c = memchr(p, ',', end - p);
+        size_t l = (c ? c : end) - p;
+        if (l > 255)
+            l = 255;
+        memcpy(fields[n], p, l);
+        fields[n][l] = '\0';
+        n++;
+        if (!c)
+            break;
+        p = c + 1;
+    }
+    int f = 1 + rnd(n > 1 ? n - 1 : 1);
+    if (f < n) {
+        switch (f) {
+        case 1:  snprintf(fields[f], 256, "%s", fonts[rnd(5)]); break;
+        case 2:  snprintf(fields[f], 256, "%u", 8 + rnd(60)); break;
+        case 3: case 4: case 5: case 6:
+            snprintf(fields[f], 256, "&H%08X", (unsigned) rnd(0x7FFFFFFF) * 2u + rnd(2));
+            break;
+        case 7: case 8: case 9: case 10:
+            snprintf(fields[f], 256, "%d", rnd(3) ? (int) rnd(2) : -1);
+            break;
+        case 11: case 12: snprintf(fields[f], 256, "%u", 50 + rnd(150)); break;
+        case 13: snprintf(fields[f], 256, "%u", rnd(6)); break;
+        case 14: snprintf(fields[f], 256, "%d", (int) rnd(90) - 45); break;
+        case 15: snprintf(fields[f], 256, "%u", rnd(2) ? 1 : 3); break;
+        case 16: case 17: snprintf(fields[f], 256, "%u.%u", rnd(6), rnd(10)); break;
+        case 18: snprintf(fields[f], 256, "%u", 1 + rnd(9)); break;
+        case 19: case 20: case 21: snprintf(fields[f], 256, "%u", rnd(120)); break;
+        default: snprintf(fields[f], 256, "%u", rnd(3)); break;
+        }
+    }
+    char *out = xmalloc(23 * 257 + 16);
+    char *o = out;
+    o += sprintf(o, "Style: %s%s", rnd(5) ? "" : "*", fields[0]);
+    for (int i = 1; i < n; i++)
+        o += sprintf(o, ",%s", fields[i]);
+    return out;
+}
+
+static void test_set_style_script(const char *name, int n_ops)
+{
+    size_t len;
+    char *text = load_script(name, &len);
+    if (!text) {
+        CHECK(0, "cannot read %s", name);
+        return;
+    }
+    Script s;
+    script_init(&s, text);
+    free(text);
+
+    char *full = script_text(&s, &len);
+    ASS_Track *live = parse(full, len);
+    free(full);
+    int n_style_lines = live->n_styles - 1;
+
+    for (int op = 0; op < n_ops && n_style_lines > 0; op++) {
+        char what[256];
+        snprintf(what, sizeof(what), "%s style op %d", name, op);
+        for (int i = 0; i < 3; i++)
+            render_hash(renderer, live, rnd((uint32_t) (s.max_end + 1)));
+
+        int n = rnd(n_style_lines);
+        size_t old_len = 0;
+        const char *old = find_style_line(&s, n, &old_len);
+        if (!old) {
+            CHECK(0, "%s: no Style line %d in the header", what, n);
+            break;
+        }
+        char *line = mutate_style(old, old_len);
+        replace_style_line(&s, n, line);
+        // a trailing line break and following text are ignored
+        size_t ll = strlen(line);
+        if (rnd(2)) {
+            line = xrealloc(line, ll + 32);
+            strcpy(line + ll, "\r\nStyle: Other,x");
+        }
+        int ret = ass_track_set_style(live, n + 1, line, strlen(line));
+        free(line);
+        CHECK(ret == 0, "%s: ass_track_set_style returned %d", what, ret);
+
+        full = script_text(&s, &len);
+        ASS_Track *fresh = parse(full, len);
+        free(full);
+        if (styles_equal(live, fresh, what) && events_equal(live, fresh, what))
+            compare_frames(live, fresh, &s, 0, live->n_events < 8 ? live->n_events : 8, what);
+        ass_free_track(fresh);
+    }
+    ass_free_track(live);
+    script_free(&s);
+}
+
+static void test_set_style(void)
+{
+    size_t len;
+    char *text = load_script("collide", &len);
+    ASS_Track *track = parse(text, len);
+    ASS_Track *ref = parse(text, len);
+    const char *good = "Style: Top,Aileron,30,&H0000FFFF,&H000000FF,&H00000000,"
+                       "&H00000000,0,0,0,0,100,100,0,0,1,1,0,8,10,10,10,1";
+    const char *renamed = "Style: Topp,Aileron,30,&H0000FFFF,&H000000FF,&H00000000,"
+                          "&H00000000,0,0,0,0,100,100,0,0,1,1,0,8,10,10,10,1";
+    CHECK(ass_track_set_style(track, 0, good, strlen(good)) == -1, "built-in style 0");
+    CHECK(ass_track_set_style(track, track->n_styles, good, strlen(good)) == -1, "sid too large");
+    CHECK(ass_track_set_style(track, 2, NULL, 4) == -1, "NULL line");
+    CHECK(ass_track_set_style(track, 2, good + 7, strlen(good + 7)) == -1, "no Style: prefix");
+    CHECK(ass_track_set_style(track, 2, renamed, strlen(renamed)) == -1, "renamed style");
+    CHECK(ass_track_set_style(track, 1, good, strlen(good)) == -1, "other style's name");
+    CHECK(ass_track_set_style(track, 2, "Style:", 6) == -1, "empty Style line");
+    CHECK(ass_track_set_style(NULL, 2, good, strlen(good)) == -1, "NULL track");
+    styles_equal(track, ref, "after rejected style edits");
+    CHECK(ass_track_set_style(track, 2, good, strlen(good)) == 0, "valid style edit");
+    CHECK(track->styles[2].FontSize == 30, "valid style edit: FontSize %g",
+          track->styles[2].FontSize);
+    CHECK(track->n_styles == ref->n_styles, "valid style edit: n_styles changed");
+    ass_free_track(ref);
+    ass_free_track(track);
+    free(text);
+
+    for (size_t i = 0; i < N_SCRIPTS; i++)
+        test_set_style_script(scripts[i], 40);
+
+    // style overrides are applied to the new style as a fresh parse applies them
+    char *overrides[] = { "Default.Outline=4", "FontSize=18", "Top.PrimaryColour=&H00FF0000", NULL };
+    ass_set_style_overrides(library, overrides);
+    test_set_style_script("collide", 20);
+    test_set_style_script("compare/fork-test/grapheme.ass", 20);
+    ass_set_style_overrides(library, NULL);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc > 1)
@@ -802,6 +1008,7 @@ int main(int argc, char *argv[])
     renderer = new_renderer(library);
 
     test_splice();
+    test_set_style();
 
     ass_renderer_done(renderer);
     ass_library_done(library);

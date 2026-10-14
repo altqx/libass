@@ -1145,6 +1145,38 @@ int ass_track_splice_events(ASS_Track *track, int first_eid, int n_remove,
 void ass_track_reset_layout_state(ASS_Track *track);
 
 /**
+ * \brief Replace a style with one parsed from a Style line.
+ * \param track track
+ * \param sid id of the style to replace (1 <= sid < n_styles; style 0 is
+ *        libass's built-in default style, which no script line describes)
+ * \param line one "Style: ..." line as it appears in the script, in UTF-8;
+ *        anything after the first line break is ignored
+ * \param len length of line in bytes
+ * \return 0 on success, -1 if an argument is invalid, the line is not a
+ *         Style line, its Name differs from the current name of style sid,
+ *         or memory could not be allocated; the track is unchanged on failure
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_TRACK_SET_STYLE.
+ *
+ * The line is parsed with the track's current style format exactly as
+ * ass_read_memory parses it, and the library's style overrides (see
+ * ass_set_style_overrides) for this style are applied again. Events refer to
+ * styles by the index their style name resolved to when they were parsed, so
+ * a style cannot be renamed this way; renaming, adding or removing styles
+ * needs a full parse. Collision placement history is reset as with
+ * ass_track_reset_layout_state, so the next ass_render_frame call renders
+ * the track exactly as it would render a track freshly parsed from the
+ * edited script. With several styles of the same name, edit the one at the
+ * same position: events use the last of them, as ass_read_memory resolves
+ * names.
+ *
+ * Must not be called while another thread renders the track.
+ */
+#define LIBASS_HAS_TRACK_SET_STYLE 1
+int ass_track_set_style(ASS_Track *track, int sid, const char *line, size_t len);
+
+/**
  * \brief Read subtitles from file.
  * \param library library handle
  * \param fname file name

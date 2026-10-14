@@ -548,16 +548,20 @@ static void set_style_alpha(ASS_Style *style, int32_t front_alpha, int32_t back_
 }
 
 /**
- * \brief Parse command line style overrides (--ass-force-style option)
+ * \brief Apply command line style overrides (--ass-force-style option)
  * \param track track to apply overrides to
+ * \param only_sid apply only the overrides for this style, or all overrides
+ *        (including the [Script Info] ones) if negative
  * The format for overrides is [StyleName.]Field=Value
  */
-void ass_process_force_style(ASS_Track *track)
+static void process_force_style(ASS_Track *track, int only_sid)
 {
     char **fs, *eq, *dt, *style, *tname, *token;
     ASS_Style *target;
     int sid;
     char **list = track->library->style_overrides;
+    int first_sid = only_sid < 0 ? 0 : only_sid;
+    int end_sid = only_sid < 0 ? track->n_styles : only_sid + 1;
 
     if (!list)
         return;
@@ -569,7 +573,9 @@ void ass_process_force_style(ASS_Track *track)
         *eq = '\0';
         token = eq + 1;
 
-        if (!ass_strcasecmp(*fs, "PlayResX"))
+        if (only_sid >= 0) {
+            // [Script Info] overrides were applied when the track was read
+        } else if (!ass_strcasecmp(*fs, "PlayResX"))
             track->PlayResX = parse_int_header(token);
         else if (!ass_strcasecmp(*fs, "PlayResY"))
             track->PlayResY = parse_int_header(token);
@@ -597,7 +603,7 @@ void ass_process_force_style(ASS_Track *track)
             style = NULL;
             tname = *fs;
         }
-        for (sid = 0; sid < track->n_styles; ++sid) {
+        for (sid = first_sid; sid < end_sid; ++sid) {
             if (style == NULL
                 || ass_strcasecmp(track->styles[sid].Name, style) == 0) {
                 target = track->styles + sid;
@@ -636,6 +642,16 @@ void ass_process_force_style(ASS_Track *track)
         if (dt)
             *dt = '.';
     }
+}
+
+/**
+ * \brief Parse command line style overrides (--ass-force-style option)
+ * \param track track to apply overrides to
+ * The format for overrides is [StyleName.]Field=Value
+ */
+void ass_process_force_style(ASS_Track *track)
+{
+    process_force_style(track, -1);
 }
 
 /**
@@ -849,6 +865,67 @@ static int process_styles_line(ASS_Track *track, char *str)
         skip_spaces(&p);
         ret = process_style(track, p);
     }
+    return ret;
+}
+
+int ass_track_set_style(ASS_Track *track, int sid, const char *line, size_t len)
+{
+    // styles[0] is libass's built-in default style; no script line sets it
+    if (!track || !track->parser_priv || sid <= 0 || sid >= track->n_styles ||
+            (!line && len) || len == SIZE_MAX)
+        return -1;
+
+    char *buf = malloc(len + 1);
+    if (!buf)
+        return -1;
+    if (len)
+        memcpy(buf, line, len);
+    buf[len] = '\0';
+
+    // take the first line, as process_text and process_line would
+    char *p = buf;
+    while (1) {
+        if ((*p == '\r') || (*p == '\n'))
+            ++p;
+        else if (p[0] == '\xef' && p[1] == '\xbb' && p[2] == '\xbf')
+            p += 3;         // U+FFFE (BOM)
+        else
+            break;
+    }
+    p[strcspn(p, "\r\n")] = '\0';
+    skip_spaces(&p);
+
+    int ret = -1;
+    int old_n_styles = track->n_styles;
+    int old_default_style = track->default_style;
+    if (strncmp(p, "Style:", 6) || !track->style_format)
+        goto done;
+    p += 6;
+    skip_spaces(&p);
+
+    // parse into a new style at the end, then move it into place
+    if (process_style(track, p) < 0 || track->n_styles != old_n_styles + 1)
+        goto done;
+    ASS_Style *parsed = track->styles + old_n_styles;
+    if (strcmp(parsed->Name, track->styles[sid].Name)) {
+        // events refer to styles by the index their name resolved to at parse time
+        ass_free_style(track, old_n_styles);
+    } else {
+        ass_free_style(track, sid);
+        track->styles[sid] = *parsed;
+        ret = 0;
+    }
+    track->n_styles = old_n_styles;
+    // unchanged: the last style named "Default" keeps its name and index
+    track->default_style = old_default_style;
+
+    if (!ret) {
+        process_force_style(track, sid);
+        ass_track_reset_layout_state(track);
+    }
+
+done:
+    free(buf);
     return ret;
 }
 
