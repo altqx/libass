@@ -2,6 +2,41 @@ libass [![Coverity scan build status](https://scan.coverity.com/projects/3531/ba
 ======
 libass is a portable subtitle renderer for the ASS/SSA (Advanced Substation Alpha/Substation Alpha) subtitle format. It is mostly compatible with VSFilter.
 
+About this fork
+===============
+This is [altqx/libass](https://github.com/altqx/libass), a fork of upstream libass that feeds native and WebAssembly consumers (e.g. [AkariSub](https://github.com/altqx/akarisub) and HikariSub). It tracks upstream `master` and adds performance work and a few fork-only APIs. **Rendering output is bit-identical to upstream**: every change is checked frame by frame against upstream on x86-64, arm64 and wasm32.
+
+Performance against upstream `60679ac`. Times are the minimum render-loop thread CPU time over 9-56 interleaved runs, pinned to one core. Machine: x86-64, Ryzen 5 5600, gcc 16.2, `-O3`:
+
+| Workload | upstream | fork | change |
+|---|---:|---:|---:|
+| Full anime episode, heavy typesetting, 34,692 frames at 1080p | 9.33 s | 4.50 s | 2.07x faster |
+| Same episode, 3,000 sampled frames at 720p | 854 ms | 554 ms | 1.54x faster |
+| Opening sequence, 192 frames | 39.1 ms | 22.5 ms | 1.74x faster |
+| Synthetic stress script, 2,000 sampled frames | 4.66 s | 2.78 s | 1.68x faster |
+| Synthetic stress script, 1,464 consecutive frames | 965 ms | 786 ms | 1.23x faster |
+| libass `compare` tests | 52.2 / 2.31 ms | 51.9 / 2.30 ms | neutral |
+| Bytes allocated while rendering the full episode | 7.54 GB | 3.38 GB | -55% |
+| `ass_renderer_init` + `ass_renderer_done` | 1.17 ms | 8.3 µs | about 140x faster |
+| `ass_set_frame_size` with empty caches | 666 µs | 0.03 µs | effectively free |
+
+The main changes are listed below; each commit message has its details and measurements:
+
+- **Event selection:** per-64-event block summaries let `ass_render_frame` skip events that cannot be active, so per-frame cost no longer grows with the length of the track.
+- **Override tags:** compiled tags are cached by block content (a fixed 4 MiB cache), and tag names are matched only after their first character.
+- **Allocations:** image nodes and composite bitmap runs are reused across frames, the blur scratch buffer is reused (capped at 4 MiB), blur parameter search is memoized, the FriBidi joining-type buffer is kept per shaper, and collision placement inserts into a sorted list instead of re-sorting it.
+- **Caches:** hash tables start small and grow on demand (about 14 KiB of buckets instead of 3 MiB), and a use-after-free in `ass_cache_empty` is fixed.
+- **Bitmap kernels:** `fix_outline` and `shift_bitmap` have SSE2/AVX2/NEON/WASM SIMD kernels.
+- **wasm32:** horizontal blur taps stay in registers, and kernels are called directly instead of through `call_indirect`.
+
+Fork-only API (declared in `libass/ass.h`):
+
+- `ass_track_events_modified(track, first_eid)`, macro `LIBASS_HAS_TRACK_EVENTS_MODIFIED`. Events changed through the libass API, or appended by hand, are tracked automatically. **If your application writes `Start`/`Duration` of existing events, or inserts or reorders events after rendering has started, call this before the next `ass_render_frame`, or the changed lines may not be shown.** A track must not be rendered by several threads at once until it has been rendered once after a change.
+- `ass_frame_pack_atlas(renderer, images, max_size, padding, max_pages)` and `ass_frame_atlas_reset(renderer)`, macro `LIBASS_HAS_FRAME_ATLAS`. They pack a frame's bitmaps into R8 texture pages plus a 32-byte instance per image, so a GPU renderer can draw a frame with one upload and one instanced draw. Unchanged pixels and instances are reported, so they can be skipped.
+- `ass_set_glyph_run_callback` is now exported from shared builds.
+
+`LIBASS_VERSION` is `0x01705010`. Upstream uses the same low-byte steps for its own API additions between releases, so detect fork features with the `LIBASS_HAS_*` macros, not with the version number.
+
 Get it
 ======
 See [GitHub releases](https://github.com/libass/libass/releases) for the latest release 0.17.5 (released 2026-06-24).
