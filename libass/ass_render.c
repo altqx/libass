@@ -2105,7 +2105,7 @@ static bool parse_events(RenderContext *state, ASS_Event *event)
                 code = ass_get_next_char(state, &p);
                 break;
             } else if ((*p == '{') && (q = strchr(p, '}'))) {
-                p = ass_parse_tags(state, p, q, 1., false);
+                p = ass_parse_tags(state, p, q);
                 assert(*p == '}');
                 p++;
             } else if (state->drawing_scale) {

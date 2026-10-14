@@ -395,27 +395,6 @@ interpolate_alpha(long long now, int32_t t1, int32_t t2, int32_t t3,
     return a;
 }
 
-/**
- * Parse a vector clip into an outline, using the proper scaling
- * parameters.  Translate it to correct for screen borders, if needed.
- */
-static bool parse_vector_clip(RenderContext *state,
-                              struct arg *args, int nargs)
-{
-    if (nargs != 1 && nargs != 2)
-        return false;
-
-    int scale = 1;
-    if (nargs == 2)
-        scale = FFMAX(argtoi32(args[0]), 1);
-
-    struct arg text = args[nargs - 1];
-    state->clip_drawing_text.str = text.start;
-    state->clip_drawing_text.len = text.end - text.start;
-    state->clip_drawing_scale = scale;
-    return true;
-}
-
 static int32_t parse_alpha_tag(char *str)
 {
     int32_t alpha = 0;
@@ -460,17 +439,195 @@ static ASS_Style *lookup_style_strict(ASS_Track *track, char *name, size_t len)
     return NULL;
 }
 
+/*
+ * Override tags are handled in two steps. compile_tags() does everything
+ * that depends only on the text of a {...} block: it splits the arguments
+ * the way VSFilter does, matches the tag names and converts the numbers.
+ * exec_tags() applies the compiled tags to the render context; everything
+ * that depends on time, style, settings or earlier tags happens there.
+ * Spans of text such as font and style names are stored as offsets from
+ * the start of the block and resolved against the text being rendered.
+ */
+
+enum {
+    TAG_XBORD,
+    TAG_YBORD,
+    TAG_XSHAD,
+    TAG_YSHAD,
+    TAG_FAX,
+    TAG_FAY,
+    TAG_CLIP,
+    TAG_BLUR,
+    TAG_FSCX,
+    TAG_FSCY,
+    TAG_FSC,
+    TAG_FSP,
+    TAG_FS,
+    TAG_BORD,
+    TAG_MOVE,
+    TAG_FRX,
+    TAG_FRY,
+    TAG_FRZ,
+    TAG_FN,
+    TAG_ALPHA,
+    TAG_AN,
+    TAG_A,
+    TAG_POS,
+    TAG_FADE,
+    TAG_ORG,
+    TAG_T,
+    TAG_T_END,
+    TAG_COLOR,
+    TAG_ALPHA_N,
+    TAG_R,
+    TAG_BE,
+    TAG_B,
+    TAG_I,
+    TAG_KT,
+    TAG_KF,
+    TAG_KO,
+    TAG_K,
+    TAG_SHAD,
+    TAG_S,
+    TAG_U,
+    TAG_PBO,
+    TAG_P,
+    TAG_Q,
+    TAG_FE,
+};
+
+typedef struct tag_token {
+    uint8_t type;
+    uint8_t index;      // colour/alpha component; \iclip for TAG_CLIP;
+                        // \t: the tokens up to the next TAG_T_END are
+                        // the body
+    bool has_arg;       // the tag has at least one argument
+    bool flag;          // \fs: relative size; \fn: style font;
+                        // \t: the rest of the block is nested;
+                        // TAG_CLIP: vector clip
+    union {
+        double d[4];
+        int32_t i[7];
+        uint32_t color;
+        struct {
+            double x1, y1, x2, y2;
+            int32_t t1, t2;
+        } move;
+        struct {
+            int32_t t1, t2;
+            double accel;
+        } t;
+        // \fn, \r and vector clip text; offset is from the block start
+        struct {
+            size_t offset, len;
+            int32_t scale;
+        } str;
+    } v;
+} TagToken;
+
+typedef struct {
+    double pwr;         // multiplier for some tag effects (comes from \t tags)
+    bool nested;        // whether this is the body of a \t tag
+    double outer_pwr;   // pwr and nested to restore after a \t body
+    bool outer_nested;
+} TagExecState;
+
+// Number of tokens compiled at a time when they are applied right away
+#define TAG_CHUNK_SIZE 64
+
+typedef struct {
+    char *start;
+    TagToken *tokens;
+    size_t count, capacity;
+    // If state is set, a full buffer is applied to it and then reused,
+    // so a block of any size is compiled in bounded memory.
+    RenderContext *state;
+    TagExecState exec;
+    TagToken dummy;     // written to on overflow, which cannot happen
+} TagCompiler;
+
+static void exec_tags(RenderContext *state, char *base, const TagToken *tok,
+                      const TagToken *end, TagExecState *x);
+
+static void flush_tags(TagCompiler *c)
+{
+    exec_tags(c->state, c->start, c->tokens, c->tokens + c->count, &c->exec);
+    c->count = 0;
+}
+
+static TagToken *add_token(TagCompiler *c, int type, int nargs)
+{
+    if (c->count == c->capacity && c->state)
+        flush_tags(c);
+    TagToken *tok = &c->dummy;
+    if (c->count < c->capacity)
+        tok = &c->tokens[c->count];
+    c->count++;
+    memset(tok, 0, sizeof(*tok));
+    tok->type = type;
+    tok->has_arg = nargs > 0;
+    return tok;
+}
+
+static void add_number(TagCompiler *c, int type, struct arg *args, int nargs)
+{
+    add_token(c, type, nargs)->v.d[0] = argtod(*args);
+}
+
+static void add_int(TagCompiler *c, int type, struct arg *args, int nargs)
+{
+    add_token(c, type, nargs)->v.i[0] = argtoi32(*args);
+}
+
+static void set_str(TagCompiler *c, TagToken *tok, char *start, char *end)
+{
+    tok->v.str.offset = start - c->start;
+    tok->v.str.len = end - start;
+}
+
+static void add_clip(TagCompiler *c, bool inverse, struct arg *args, int nargs)
+{
+    TagToken *tok;
+    if (nargs == 4) {
+        tok = add_token(c, TAG_CLIP, nargs);
+        for (int i = 0; i < 4; i++)
+            tok->v.i[i] = argtoi32(args[i]);
+    } else if (nargs == 1 || nargs == 2) {
+        // vector clip, with an optional scale
+        tok = add_token(c, TAG_CLIP, nargs);
+        tok->flag = true;
+        tok->v.str.scale = 1;
+        if (nargs == 2)
+            tok->v.str.scale = FFMAX(argtoi32(args[0]), 1);
+        set_str(c, tok, args[nargs - 1].start, args[nargs - 1].end);
+    } else
+        return;
+    tok->index = inverse;
+}
+
+static void add_color(TagCompiler *c, int index, struct arg *args, int nargs)
+{
+    TagToken *tok = add_token(c, TAG_COLOR, nargs);
+    tok->index = index;
+    tok->v.color = parse_color_tag(args->start);
+}
+
+static void add_alpha(TagCompiler *c, int index, struct arg *args, int nargs)
+{
+    TagToken *tok = add_token(c, TAG_ALPHA_N, nargs);
+    tok->index = index;
+    tok->v.i[0] = parse_alpha_tag(args->start);
+}
+
 /**
- * \brief Parse style override tags.
+ * \brief Compile style override tags.
  * \param p string to parse
  * \param end end of string to parse, which must be '}', ')', or the first
  *            of a number of spaces immediately preceding '}' or ')'
- * \param pwr multiplier for some tag effects (comes from \t tags)
+ * \param nested whether this is the body of a \t tag
  */
-char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
-                     bool nested)
+static void compile_tags(TagCompiler *c, char *p, char *end, bool nested)
 {
-    ASS_Renderer *render_priv = state->renderer;
     for (char *q; p < end; p = q) {
         while (*p != '\\' && p != end)
             ++p;
@@ -544,149 +701,44 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
 
         // New tags introduced in vsfilter 2.39
         if (tag("xbord")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->border_x * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-            } else
-                val = state->style->Outline;
-            state->border_x = val;
+            add_number(c, TAG_XBORD, args, nargs);
         } else if (tag("ybord")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->border_y * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-            } else
-                val = state->style->Outline;
-            state->border_y = val;
+            add_number(c, TAG_YBORD, args, nargs);
         } else if (tag("xshad")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->shadow_x * (1 - pwr) + val * pwr;
-            } else
-                val = state->style->Shadow;
-            state->shadow_x = val;
+            add_number(c, TAG_XSHAD, args, nargs);
         } else if (tag("yshad")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->shadow_y * (1 - pwr) + val * pwr;
-            } else
-                val = state->style->Shadow;
-            state->shadow_y = val;
+            add_number(c, TAG_YSHAD, args, nargs);
         } else if (tag("fax")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                state->fax =
-                    val * pwr + state->fax * (1 - pwr);
-            } else
-                state->fax = 0.;
+            add_number(c, TAG_FAX, args, nargs);
         } else if (tag("fay")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                state->fay =
-                    val * pwr + state->fay * (1 - pwr);
-            } else
-                state->fay = 0.;
+            add_number(c, TAG_FAY, args, nargs);
         } else if (complex_tag("iclip")) {
-            if (nargs == 4) {
-                int32_t x0, y0, x1, y1;
-                x0 = argtoi32(args[0]);
-                y0 = argtoi32(args[1]);
-                x1 = argtoi32(args[2]);
-                y1 = argtoi32(args[3]);
-                state->clip_x0 =
-                    state->clip_x0 * (1 - pwr) + x0 * pwr;
-                state->clip_x1 =
-                    state->clip_x1 * (1 - pwr) + x1 * pwr;
-                state->clip_y0 =
-                    state->clip_y0 * (1 - pwr) + y0 * pwr;
-                state->clip_y1 =
-                    state->clip_y1 * (1 - pwr) + y1 * pwr;
-                state->clip_mode = 1;
-            } else if (!state->clip_drawing_text.str) {
-                if (parse_vector_clip(state, args, nargs))
-                    state->clip_drawing_mode = 1;
-            }
+            add_clip(c, true, args, nargs);
         } else if (tag("blur")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                val = state->blur * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-                val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
-                state->blur = val;
-            } else
-                state->blur = 0.0;
+            add_number(c, TAG_BLUR, args, nargs);
             // ASS standard tags
         } else if (tag("fscx")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args) / 100;
-                val = state->scale_x * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-            } else
-                val = state->style->ScaleX;
-            state->scale_x = val;
+            add_number(c, TAG_FSCX, args, nargs);
         } else if (tag("fscy")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args) / 100;
-                val = state->scale_y * (1 - pwr) + val * pwr;
-                val = (val < 0) ? 0 : val;
-            } else
-                val = state->style->ScaleY;
-            state->scale_y = val;
+            add_number(c, TAG_FSCY, args, nargs);
         } else if (tag("fsc")) {
-            state->scale_x = state->style->ScaleX;
-            state->scale_y = state->style->ScaleY;
+            add_token(c, TAG_FSC, nargs);
         } else if (tag("fsp")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
-                state->hspacing =
-                    state->hspacing * (1 - pwr) + val * pwr;
-            } else
-                state->hspacing = state->style->Spacing;
+            add_number(c, TAG_FSP, args, nargs);
         } else if (tag("fs")) {
-            double val = 0;
-            if (nargs) {
-                val = argtod(*args);
-                if (*args->start == '+' || *args->start == '-')
-                    val = state->font_size * (1 + pwr * val / 10);
-                else
-                    val = state->font_size * (1 - pwr) + val * pwr;
-            }
-            if (val <= 0)
-                val = state->style->FontSize;
-            state->font_size = val;
+            TagToken *tok = add_token(c, TAG_FS, nargs);
+            tok->v.d[0] = argtod(*args);
+            tok->flag = *args->start == '+' || *args->start == '-';
         } else if (tag("bord")) {
-            double val, xval, yval;
-            if (nargs) {
-                val = argtod(*args);
-                xval = state->border_x * (1 - pwr) + val * pwr;
-                yval = state->border_y * (1 - pwr) + val * pwr;
-                xval = (xval < 0) ? 0 : xval;
-                yval = (yval < 0) ? 0 : yval;
-            } else
-                xval = yval = state->style->Outline;
-            state->border_x = xval;
-            state->border_y = yval;
+            add_number(c, TAG_BORD, args, nargs);
         } else if (complex_tag("move")) {
-            double x1, x2, y1, y2;
-            int32_t t1, t2, delta_t, t;
-            double x, y;
-            double k;
             if (nargs == 4 || nargs == 6) {
-                x1 = argtod(args[0]);
-                y1 = argtod(args[1]);
-                x2 = argtod(args[2]);
-                y2 = argtod(args[3]);
+                TagToken *tok = add_token(c, TAG_MOVE, nargs);
+                int32_t t1, t2;
+                tok->v.move.x1 = argtod(args[0]);
+                tok->v.move.y1 = argtod(args[1]);
+                tok->v.move.x2 = argtod(args[2]);
+                tok->v.move.y2 = argtod(args[3]);
                 t1 = t2 = 0;
                 if (nargs == 6) {
                     t1 = argtoi32(args[4]);
@@ -697,8 +749,337 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                         t1 = tmp;
                     }
                 }
+                tok->v.move.t1 = t1;
+                tok->v.move.t2 = t2;
+            }
+        } else if (tag("frx")) {
+            add_number(c, TAG_FRX, args, nargs);
+        } else if (tag("fry")) {
+            add_number(c, TAG_FRY, args, nargs);
+        } else if (tag("frz") || tag("fr")) {
+            add_number(c, TAG_FRZ, args, nargs);
+        } else if (tag("fn")) {
+            TagToken *tok = add_token(c, TAG_FN, nargs);
+            char *start = args->start;
+            if (nargs && strncmp(start, "0", args->end - start)) {
+                skip_spaces(&start);
+                set_str(c, tok, start, args->end);
             } else
+                tok->flag = true;
+        } else if (tag("alpha")) {
+            TagToken *tok = add_token(c, TAG_ALPHA, nargs);
+            tok->v.i[0] = parse_alpha_tag(args->start);
+        } else if (tag("an")) {
+            add_int(c, TAG_AN, args, nargs);
+        } else if (tag("a")) {
+            add_int(c, TAG_A, args, nargs);
+        } else if (complex_tag("pos")) {
+            if (nargs == 2) {
+                TagToken *tok = add_token(c, TAG_POS, nargs);
+                tok->v.d[0] = argtod(args[0]);
+                tok->v.d[1] = argtod(args[1]);
+            }
+        } else if (complex_tag("fade") || complex_tag("fad")) {
+            int32_t *v;
+            if (nargs == 2) {
+                // 2-argument version (\fad, according to specs)
+                v = add_token(c, TAG_FADE, nargs)->v.i;
+                v[0] = 0xFF;
+                v[1] = 0;
+                v[2] = 0xFF;
+                v[3] = -1;
+                v[4] = argtoi32(args[0]);
+                v[5] = argtoi32(args[1]);
+                v[6] = -1;
+            } else if (nargs == 7) {
+                // 7-argument version (\fade)
+                v = add_token(c, TAG_FADE, nargs)->v.i;
+                for (int i = 0; i < 7; i++)
+                    v[i] = argtoi32(args[i]);
+            }
+        } else if (complex_tag("org")) {
+            if (nargs == 2) {
+                TagToken *tok = add_token(c, TAG_ORG, nargs);
+                tok->v.d[0] = argtod(args[0]);
+                tok->v.d[1] = argtod(args[1]);
+            }
+        } else if (complex_tag("t")) {
+            TagToken *tok = add_token(c, TAG_T, nargs);
+            int cnt = nargs - 1;
+            // VSFilter compatibility (because we can): parse the
+            // timestamps differently depending on argument count.
+            if (cnt == 3) {
+                tok->v.t.t1 = argtoi32(args[0]);
+                tok->v.t.t2 = argtoi32(args[1]);
+                tok->v.t.accel = argtod(args[2]);
+            } else if (cnt == 2) {
+                tok->v.t.t1 = dtoi32(argtod(args[0]));
+                tok->v.t.t2 = dtoi32(argtod(args[1]));
+                tok->v.t.accel = 1.;
+            } else if (cnt == 1) {
+                tok->v.t.accel = argtod(args[0]);
+            } else {
+                tok->v.t.accel = 1.;
+            }
+            if (cnt < 0 || cnt > 3)
                 continue;
+            // If there's no backslash in the arguments, there are no
+            // override tags, so it's pointless to try to parse them.
+            if (!has_backslash_arg)
+                continue;
+            p = args[cnt].start;
+            if (args[cnt].end < end) {
+                assert(!nested);
+                tok->index = 1;
+                compile_tags(c, p, args[cnt].end, true);
+                add_token(c, TAG_T_END, 0);
+            } else {
+                assert(q == end);
+                // No other tags can possibly follow this \t tag,
+                // so the rest of the block is its body.
+                tok->flag = true;
+                nested = true;
+                q = p;
+            }
+        } else if (complex_tag("clip")) {
+            add_clip(c, false, args, nargs);
+        } else if (tag("c") || tag("1c")) {
+            add_color(c, 0, args, nargs);
+        } else if (tag("2c")) {
+            add_color(c, 1, args, nargs);
+        } else if (tag("3c")) {
+            add_color(c, 2, args, nargs);
+        } else if (tag("4c")) {
+            add_color(c, 3, args, nargs);
+        } else if (tag("1a")) {
+            add_alpha(c, 0, args, nargs);
+        } else if (tag("2a")) {
+            add_alpha(c, 1, args, nargs);
+        } else if (tag("3a")) {
+            add_alpha(c, 2, args, nargs);
+        } else if (tag("4a")) {
+            add_alpha(c, 3, args, nargs);
+        } else if (tag("r")) {
+            TagToken *tok = add_token(c, TAG_R, nargs);
+            if (nargs)
+                set_str(c, tok, args->start, args->end);
+        } else if (tag("be")) {
+            add_number(c, TAG_BE, args, nargs);
+        } else if (tag("b")) {
+            add_int(c, TAG_B, args, nargs);
+        } else if (tag("i")) {
+            add_int(c, TAG_I, args, nargs);
+        } else if (tag("kt")) {
+            add_number(c, TAG_KT, args, nargs);
+        } else if (tag("kf") || tag("K")) {
+            add_number(c, TAG_KF, args, nargs);
+        } else if (tag("ko")) {
+            add_number(c, TAG_KO, args, nargs);
+        } else if (tag("k")) {
+            add_number(c, TAG_K, args, nargs);
+        } else if (tag("shad")) {
+            add_number(c, TAG_SHAD, args, nargs);
+        } else if (tag("s")) {
+            add_int(c, TAG_S, args, nargs);
+        } else if (tag("u")) {
+            add_int(c, TAG_U, args, nargs);
+        } else if (tag("pbo")) {
+            add_number(c, TAG_PBO, args, nargs);
+        } else if (tag("p")) {
+            add_int(c, TAG_P, args, nargs);
+        } else if (tag("q")) {
+            add_int(c, TAG_Q, args, nargs);
+        } else if (tag("fe")) {
+            add_int(c, TAG_FE, args, nargs);
+        }
+    }
+}
+
+static uint32_t style_color(ASS_Style *style, int index)
+{
+    switch (index) {
+    case 0:
+        return style->PrimaryColour;
+    case 1:
+        return style->SecondaryColour;
+    case 2:
+        return style->OutlineColour;
+    default:
+        return style->BackColour;
+    }
+}
+
+/**
+ * \brief Apply compiled style override tags.
+ * \param base start of the {...} block the tokens were compiled from
+ * \param x \t state, which is updated so that the tokens of a block
+ *          can be applied in several pieces
+ */
+static void exec_tags(RenderContext *state, char *base, const TagToken *tok,
+                      const TagToken *end, TagExecState *x)
+{
+    ASS_Renderer *render_priv = state->renderer;
+    double pwr = x->pwr;
+    bool nested = x->nested;
+    for (; tok < end; tok++) {
+        switch (tok->type) {
+        case TAG_XBORD: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                val = state->border_x * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+            } else
+                val = state->style->Outline;
+            state->border_x = val;
+            break;
+        }
+        case TAG_YBORD: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                val = state->border_y * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+            } else
+                val = state->style->Outline;
+            state->border_y = val;
+            break;
+        }
+        case TAG_XSHAD: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                val = state->shadow_x * (1 - pwr) + val * pwr;
+            } else
+                val = state->style->Shadow;
+            state->shadow_x = val;
+            break;
+        }
+        case TAG_YSHAD: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                val = state->shadow_y * (1 - pwr) + val * pwr;
+            } else
+                val = state->style->Shadow;
+            state->shadow_y = val;
+            break;
+        }
+        case TAG_FAX:
+            if (tok->has_arg)
+                state->fax =
+                    tok->v.d[0] * pwr + state->fax * (1 - pwr);
+            else
+                state->fax = 0.;
+            break;
+        case TAG_FAY:
+            if (tok->has_arg)
+                state->fay =
+                    tok->v.d[0] * pwr + state->fay * (1 - pwr);
+            else
+                state->fay = 0.;
+            break;
+        case TAG_CLIP:
+            if (!tok->flag) {
+                int32_t x0, y0, x1, y1;
+                x0 = tok->v.i[0];
+                y0 = tok->v.i[1];
+                x1 = tok->v.i[2];
+                y1 = tok->v.i[3];
+                state->clip_x0 =
+                    state->clip_x0 * (1 - pwr) + x0 * pwr;
+                state->clip_x1 =
+                    state->clip_x1 * (1 - pwr) + x1 * pwr;
+                state->clip_y0 =
+                    state->clip_y0 * (1 - pwr) + y0 * pwr;
+                state->clip_y1 =
+                    state->clip_y1 * (1 - pwr) + y1 * pwr;
+                state->clip_mode = tok->index;
+            } else if (!state->clip_drawing_text.str) {
+                state->clip_drawing_text.str = base + tok->v.str.offset;
+                state->clip_drawing_text.len = tok->v.str.len;
+                state->clip_drawing_scale = tok->v.str.scale;
+                state->clip_drawing_mode = tok->index;
+            }
+            break;
+        case TAG_BLUR:
+            if (tok->has_arg) {
+                double val = tok->v.d[0];
+                val = state->blur * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+                val = (val > BLUR_MAX_RADIUS) ? BLUR_MAX_RADIUS : val;
+                state->blur = val;
+            } else
+                state->blur = 0.0;
+            break;
+        case TAG_FSCX: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0] / 100;
+                val = state->scale_x * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+            } else
+                val = state->style->ScaleX;
+            state->scale_x = val;
+            break;
+        }
+        case TAG_FSCY: {
+            double val;
+            if (tok->has_arg) {
+                val = tok->v.d[0] / 100;
+                val = state->scale_y * (1 - pwr) + val * pwr;
+                val = (val < 0) ? 0 : val;
+            } else
+                val = state->style->ScaleY;
+            state->scale_y = val;
+            break;
+        }
+        case TAG_FSC:
+            state->scale_x = state->style->ScaleX;
+            state->scale_y = state->style->ScaleY;
+            break;
+        case TAG_FSP:
+            if (tok->has_arg)
+                state->hspacing =
+                    state->hspacing * (1 - pwr) + tok->v.d[0] * pwr;
+            else
+                state->hspacing = state->style->Spacing;
+            break;
+        case TAG_FS: {
+            double val = 0;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                if (tok->flag)
+                    val = state->font_size * (1 + pwr * val / 10);
+                else
+                    val = state->font_size * (1 - pwr) + val * pwr;
+            }
+            if (val <= 0)
+                val = state->style->FontSize;
+            state->font_size = val;
+            break;
+        }
+        case TAG_BORD: {
+            double val, xval, yval;
+            if (tok->has_arg) {
+                val = tok->v.d[0];
+                xval = state->border_x * (1 - pwr) + val * pwr;
+                yval = state->border_y * (1 - pwr) + val * pwr;
+                xval = (xval < 0) ? 0 : xval;
+                yval = (yval < 0) ? 0 : yval;
+            } else
+                xval = yval = state->style->Outline;
+            state->border_x = xval;
+            state->border_y = yval;
+            break;
+        }
+        case TAG_MOVE: {
+            double x1 = tok->v.move.x1, y1 = tok->v.move.y1;
+            double x2 = tok->v.move.x2, y2 = tok->v.move.y2;
+            int32_t t1 = tok->v.move.t1, t2 = tok->v.move.t2;
+            int32_t delta_t, t;
+            double x, y;
+            double k;
             if (t1 <= 0 && t2 <= 0) {
                 t1 = 0;
                 t2 = state->event->Duration;
@@ -719,61 +1100,52 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 state->detect_collisions = 0;
                 state->evt_type |= EVENT_POSITIONED;
             }
-        } else if (tag("frx")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
+            break;
+        }
+        case TAG_FRX:
+            if (tok->has_arg)
                 state->frx =
-                    val * pwr + state->frx * (1 - pwr);
-            } else
+                    tok->v.d[0] * pwr + state->frx * (1 - pwr);
+            else
                 state->frx = 0.;
-        } else if (tag("fry")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
+            break;
+        case TAG_FRY:
+            if (tok->has_arg)
                 state->fry =
-                    val * pwr + state->fry * (1 - pwr);
-            } else
+                    tok->v.d[0] * pwr + state->fry * (1 - pwr);
+            else
                 state->fry = 0.;
-        } else if (tag("frz") || tag("fr")) {
-            double val;
-            if (nargs) {
-                val = argtod(*args);
+            break;
+        case TAG_FRZ:
+            if (tok->has_arg)
                 state->frz =
-                    val * pwr + state->frz * (1 - pwr);
-            } else
+                    tok->v.d[0] * pwr + state->frz * (1 - pwr);
+            else
                 state->frz =
                     state->style->Angle;
-        } else if (tag("fn")) {
-            char *start = args->start;
-            if (nargs && strncmp(start, "0", args->end - start)) {
-                skip_spaces(&start);
-                state->family.str = start;
-                state->family.len = args->end - start;
+            break;
+        case TAG_FN:
+            if (!tok->flag) {
+                state->family.str = base + tok->v.str.offset;
+                state->family.len = tok->v.str.len;
             } else {
                 state->family.str = state->style->FontName;
                 state->family.len = strlen(state->style->FontName);
             }
             ass_update_font(state);
-        } else if (tag("alpha")) {
-            int i;
-            if (nargs) {
-                int32_t a = parse_alpha_tag(args->start);
-                for (i = 0; i < 4; ++i)
-                    change_alpha(&state->c[i], a, pwr);
+            break;
+        case TAG_ALPHA:
+            if (tok->has_arg) {
+                for (int i = 0; i < 4; ++i)
+                    change_alpha(&state->c[i], tok->v.i[0], pwr);
             } else {
-                change_alpha(&state->c[0],
-                             _a(state->style->PrimaryColour), 1);
-                change_alpha(&state->c[1],
-                             _a(state->style->SecondaryColour), 1);
-                change_alpha(&state->c[2],
-                             _a(state->style->OutlineColour), 1);
-                change_alpha(&state->c[3],
-                             _a(state->style->BackColour), 1);
+                for (int i = 0; i < 4; ++i)
+                    change_alpha(&state->c[i],
+                                 _a(style_color(state->style, i)), 1);
             }
-            // FIXME: simplify
-        } else if (tag("an")) {
-            int32_t val = argtoi32(*args);
+            break;
+        case TAG_AN: {
+            int32_t val = tok->v.i[0];
             if ((state->parsed_tags & PARSED_A) == 0) {
                 if (val >= 1 && val <= 9)
                     state->alignment = numpad2align(val);
@@ -782,8 +1154,10 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                         state->style->Alignment;
                 state->parsed_tags |= PARSED_A;
             }
-        } else if (tag("a")) {
-            int32_t val = argtoi32(*args);
+            break;
+        }
+        case TAG_A: {
+            int32_t val = tok->v.i[0];
             if ((state->parsed_tags & PARSED_A) == 0) {
                 if (val >= 1 && val <= 11)
                     // take care of a vsfilter quirk:
@@ -794,45 +1168,23 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                         state->style->Alignment;
                 state->parsed_tags |= PARSED_A;
             }
-        } else if (complex_tag("pos")) {
-            double v1, v2;
-            if (nargs == 2) {
-                v1 = argtod(args[0]);
-                v2 = argtod(args[1]);
-            } else
-                continue;
+            break;
+        }
+        case TAG_POS:
             if (state->evt_type & EVENT_POSITIONED) {
                 ass_msg(render_priv->library, MSGL_V, "Subtitle has a new \\pos "
                        "after \\move or \\pos, ignoring");
             } else {
                 state->evt_type |= EVENT_POSITIONED;
                 state->detect_collisions = 0;
-                state->pos_x = v1;
-                state->pos_y = v2;
+                state->pos_x = tok->v.d[0];
+                state->pos_y = tok->v.d[1];
             }
-        } else if (complex_tag("fade") || complex_tag("fad")) {
-            int32_t a1, a2, a3;
-            int32_t t1, t2, t3, t4;
-            if (nargs == 2) {
-                // 2-argument version (\fad, according to specs)
-                a1 = 0xFF;
-                a2 = 0;
-                a3 = 0xFF;
-                t1 = -1;
-                t2 = argtoi32(args[0]);
-                t3 = argtoi32(args[1]);
-                t4 = -1;
-            } else if (nargs == 7) {
-                // 7-argument version (\fade)
-                a1 = argtoi32(args[0]);
-                a2 = argtoi32(args[1]);
-                a3 = argtoi32(args[2]);
-                t1 = argtoi32(args[3]);
-                t2 = argtoi32(args[4]);
-                t3 = argtoi32(args[5]);
-                t4 = argtoi32(args[6]);
-            } else
-                continue;
+            break;
+        case TAG_FADE: {
+            int32_t a1 = tok->v.i[0], a2 = tok->v.i[1], a3 = tok->v.i[2];
+            int32_t t1 = tok->v.i[3], t2 = tok->v.i[4];
+            int32_t t3 = tok->v.i[5], t4 = tok->v.i[6];
             if (t1 == -1 && t4 == -1) {
                 t1 = 0;
                 t4 = state->event->Duration;
@@ -845,43 +1197,19 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                             t3, t4, a1, a2, a3);
                 state->parsed_tags |= PARSED_FADE;
             }
-        } else if (complex_tag("org")) {
-            double v1, v2;
-            if (nargs == 2) {
-                v1 = argtod(args[0]);
-                v2 = argtod(args[1]);
-            } else
-                continue;
+            break;
+        }
+        case TAG_ORG:
             if (!state->have_origin) {
-                state->org_x = v1;
-                state->org_y = v2;
+                state->org_x = tok->v.d[0];
+                state->org_y = tok->v.d[1];
                 state->have_origin = 1;
                 state->detect_collisions = 0;
             }
-        } else if (complex_tag("t")) {
-            double accel;
-            int cnt = nargs - 1;
-            int32_t t1, t2, t, delta_t;
+            break;
+        case TAG_T: {
+            int32_t t1 = tok->v.t.t1, t2 = tok->v.t.t2, t, delta_t;
             double k;
-            // VSFilter compatibility (because we can): parse the
-            // timestamps differently depending on argument count.
-            if (cnt == 3) {
-                t1 = argtoi32(args[0]);
-                t2 = argtoi32(args[1]);
-                accel = argtod(args[2]);
-            } else if (cnt == 2) {
-                t1 = dtoi32(argtod(args[0]));
-                t2 = dtoi32(argtod(args[1]));
-                accel = 1.;
-            } else if (cnt == 1) {
-                t1 = 0;
-                t2 = 0;
-                accel = argtod(args[0]);
-            } else {
-                t1 = 0;
-                t2 = 0;
-                accel = 1.;
-            }
             state->detect_collisions = 0;
             if (t2 == 0)
                 t2 = state->event->Duration;
@@ -893,174 +1221,106 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 k = 1.;
             else {
                 assert(delta_t != 0.);
-                k = pow((double) (int32_t) ((uint32_t) t - t1) / delta_t, accel);
+                k = pow((double) (int32_t) ((uint32_t) t - t1) / delta_t,
+                        tok->v.t.accel);
             }
             if (nested)
                 pwr = k;
-            if (cnt < 0 || cnt > 3)
-                continue;
-            // If there's no backslash in the arguments, there are no
-            // override tags, so it's pointless to try to parse them.
-            if (!has_backslash_arg)
-                continue;
-            p = args[cnt].start;
-            if (args[cnt].end < end) {
-                assert(!nested);
-                p = ass_parse_tags(state, p, args[cnt].end, k, true);
-            } else {
-                assert(q == end);
-                // No other tags can possibly follow this \t tag,
-                // so we don't need to restore pwr after parsing \t.
-                // The recursive call is now essentially a tail call,
-                // so optimize it away.
+            if (tok->flag) {
+                // The rest of the block is the body of this \t tag.
                 pwr = k;
                 nested = true;
-                q = p;
+            } else if (tok->index) {
+                x->outer_pwr = pwr;
+                x->outer_nested = nested;
+                pwr = k;
+                nested = true;
             }
-        } else if (complex_tag("clip")) {
-            if (nargs == 4) {
-                int32_t x0, y0, x1, y1;
-                x0 = argtoi32(args[0]);
-                y0 = argtoi32(args[1]);
-                x1 = argtoi32(args[2]);
-                y1 = argtoi32(args[3]);
-                state->clip_x0 =
-                    state->clip_x0 * (1 - pwr) + x0 * pwr;
-                state->clip_x1 =
-                    state->clip_x1 * (1 - pwr) + x1 * pwr;
-                state->clip_y0 =
-                    state->clip_y0 * (1 - pwr) + y0 * pwr;
-                state->clip_y1 =
-                    state->clip_y1 * (1 - pwr) + y1 * pwr;
-                state->clip_mode = 0;
-            } else if (!state->clip_drawing_text.str) {
-                if (parse_vector_clip(state, args, nargs))
-                    state->clip_drawing_mode = 0;
-            }
-        } else if (tag("c") || tag("1c")) {
-            if (nargs) {
-                uint32_t val = parse_color_tag(args->start);
-                change_color(&state->c[0], val, pwr);
-            } else
-                change_color(&state->c[0],
-                             state->style->PrimaryColour, 1);
-        } else if (tag("2c")) {
-            if (nargs) {
-                uint32_t val = parse_color_tag(args->start);
-                change_color(&state->c[1], val, pwr);
-            } else
-                change_color(&state->c[1],
-                             state->style->SecondaryColour, 1);
-        } else if (tag("3c")) {
-            if (nargs) {
-                uint32_t val = parse_color_tag(args->start);
-                change_color(&state->c[2], val, pwr);
-            } else
-                change_color(&state->c[2],
-                             state->style->OutlineColour, 1);
-        } else if (tag("4c")) {
-            if (nargs) {
-                uint32_t val = parse_color_tag(args->start);
-                change_color(&state->c[3], val, pwr);
-            } else
-                change_color(&state->c[3],
-                             state->style->BackColour, 1);
-        } else if (tag("1a")) {
-            if (nargs) {
-                uint32_t val = parse_alpha_tag(args->start);
-                change_alpha(&state->c[0], val, pwr);
-            } else
-                change_alpha(&state->c[0],
-                             _a(state->style->PrimaryColour), 1);
-        } else if (tag("2a")) {
-            if (nargs) {
-                uint32_t val = parse_alpha_tag(args->start);
-                change_alpha(&state->c[1], val, pwr);
-            } else
-                change_alpha(&state->c[1],
-                             _a(state->style->SecondaryColour), 1);
-        } else if (tag("3a")) {
-            if (nargs) {
-                uint32_t val = parse_alpha_tag(args->start);
-                change_alpha(&state->c[2], val, pwr);
-            } else
-                change_alpha(&state->c[2],
-                             _a(state->style->OutlineColour), 1);
-        } else if (tag("4a")) {
-            if (nargs) {
-                uint32_t val = parse_alpha_tag(args->start);
-                change_alpha(&state->c[3], val, pwr);
-            } else
-                change_alpha(&state->c[3],
-                             _a(state->style->BackColour), 1);
-        } else if (tag("r")) {
-            if (nargs) {
-                int len = args->end - args->start;
+            break;
+        }
+        case TAG_T_END:
+            pwr = x->outer_pwr;
+            nested = x->outer_nested;
+            break;
+        case TAG_COLOR:
+            if (tok->has_arg)
+                change_color(&state->c[tok->index], tok->v.color, pwr);
+            else
+                change_color(&state->c[tok->index],
+                             style_color(state->style, tok->index), 1);
+            break;
+        case TAG_ALPHA_N:
+            if (tok->has_arg)
+                change_alpha(&state->c[tok->index], tok->v.i[0], pwr);
+            else
+                change_alpha(&state->c[tok->index],
+                             _a(style_color(state->style, tok->index)), 1);
+            break;
+        case TAG_R:
+            if (tok->has_arg) {
+                int len = tok->v.str.len;
                 ass_reset_render_context(state,
-                        lookup_style_strict(render_priv->track, args->start, len));
+                        lookup_style_strict(render_priv->track,
+                                            base + tok->v.str.offset, len));
             } else
                 ass_reset_render_context(state, NULL);
-        } else if (tag("be")) {
-            double dval;
-            if (nargs) {
+            break;
+        case TAG_BE:
+            if (tok->has_arg) {
                 int32_t val;
-                dval = argtod(*args);
                 // VSFilter always adds +0.5, even if the value is negative
-                val = dtoi32(state->be * (1 - pwr) + dval * pwr + 0.5);
+                val = dtoi32(state->be * (1 - pwr) + tok->v.d[0] * pwr + 0.5);
                 // Clamp to a safe upper limit, since high values need excessive CPU
                 val = (val < 0) ? 0 : val;
                 val = (val > MAX_BE) ? MAX_BE : val;
                 state->be = val;
             } else
                 state->be = 0;
-        } else if (tag("b")) {
-            int32_t val = argtoi32(*args);
-            if (!nargs || !(val == 0 || val == 1 || val >= 100))
+            break;
+        case TAG_B: {
+            int32_t val = tok->v.i[0];
+            if (!tok->has_arg || !(val == 0 || val == 1 || val >= 100))
                 val = state->style->Bold;
             state->bold = val;
             ass_update_font(state);
-        } else if (tag("i")) {
-            int32_t val = argtoi32(*args);
-            if (!nargs || !(val == 0 || val == 1))
+            break;
+        }
+        case TAG_I: {
+            int32_t val = tok->v.i[0];
+            if (!tok->has_arg || !(val == 0 || val == 1))
                 val = state->style->Italic;
             state->italic = val;
             ass_update_font(state);
-        } else if (tag("kt")) {
+            break;
+        }
+        case TAG_KT: {
             // v4++
             double val = 0;
-            if (nargs)
-                val = argtod(*args) * 10;
+            if (tok->has_arg)
+                val = tok->v.d[0] * 10;
             state->effect_skip_timing = dtoi32(val);
             state->effect_timing = 0;
             state->reset_effect = true;
-        } else if (tag("kf") || tag("K")) {
+            break;
+        }
+        case TAG_KF:
+        case TAG_KO:
+        case TAG_K: {
             double val = 100;
-            if (nargs)
-                val = argtod(*args);
-            state->effect_type = EF_KARAOKE_KF;
+            if (tok->has_arg)
+                val = tok->v.d[0];
+            state->effect_type = tok->type == TAG_KF ? EF_KARAOKE_KF :
+                                 tok->type == TAG_KO ? EF_KARAOKE_KO :
+                                 EF_KARAOKE;
             state->effect_skip_timing +=
                     (uint32_t) state->effect_timing;
             state->effect_timing = dtoi32(val * 10);
-        } else if (tag("ko")) {
-            double val = 100;
-            if (nargs)
-                val = argtod(*args);
-            state->effect_type = EF_KARAOKE_KO;
-            state->effect_skip_timing +=
-                    (uint32_t) state->effect_timing;
-            state->effect_timing = dtoi32(val * 10);
-        } else if (tag("k")) {
-            double val = 100;
-            if (nargs)
-                val = argtod(*args);
-            state->effect_type = EF_KARAOKE;
-            state->effect_skip_timing +=
-                    (uint32_t) state->effect_timing;
-            state->effect_timing = dtoi32(val * 10);
-        } else if (tag("shad")) {
+            break;
+        }
+        case TAG_SHAD: {
             double val, xval, yval;
-            if (nargs) {
-                val = argtod(*args);
+            if (tok->has_arg) {
+                val = tok->v.d[0];
                 xval = state->shadow_x * (1 - pwr) + val * pwr;
                 yval = state->shadow_y * (1 - pwr) + val * pwr;
                 // VSFilter compatibility: clip for \shad but not for \[xy]shad
@@ -1070,45 +1330,78 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
                 xval = yval = state->style->Shadow;
             state->shadow_x = xval;
             state->shadow_y = yval;
-        } else if (tag("s")) {
-            int32_t val = argtoi32(*args);
-            if (!nargs || !(val == 0 || val == 1))
+            break;
+        }
+        case TAG_S: {
+            int32_t val = tok->v.i[0];
+            if (!tok->has_arg || !(val == 0 || val == 1))
                 val = state->style->StrikeOut;
             if (val)
                 state->flags |= DECO_STRIKETHROUGH;
             else
                 state->flags &= ~DECO_STRIKETHROUGH;
-        } else if (tag("u")) {
-            int32_t val = argtoi32(*args);
-            if (!nargs || !(val == 0 || val == 1))
+            break;
+        }
+        case TAG_U: {
+            int32_t val = tok->v.i[0];
+            if (!tok->has_arg || !(val == 0 || val == 1))
                 val = state->style->Underline;
             if (val)
                 state->flags |= DECO_UNDERLINE;
             else
                 state->flags &= ~DECO_UNDERLINE;
-        } else if (tag("pbo")) {
-            double val = argtod(*args);
-            state->pbo = val;
-        } else if (tag("p")) {
-            int32_t val = argtoi32(*args);
+            break;
+        }
+        case TAG_PBO:
+            state->pbo = tok->v.d[0];
+            break;
+        case TAG_P: {
+            int32_t val = tok->v.i[0];
             val = (val < 0) ? 0 : val;
             state->drawing_scale = val;
-        } else if (tag("q")) {
-            int32_t val = argtoi32(*args);
-            if (!nargs || !(val >= 0 && val <= 3))
+            break;
+        }
+        case TAG_Q: {
+            int32_t val = tok->v.i[0];
+            if (!tok->has_arg || !(val >= 0 && val <= 3))
                 val = render_priv->track->WrapStyle;
             state->wrap_style = val;
-        } else if (tag("fe")) {
+            break;
+        }
+        case TAG_FE: {
             int32_t val;
-            if (nargs)
-                val = argtoi32(*args);
+            if (tok->has_arg)
+                val = tok->v.i[0];
             else
                 val = state->style->Encoding;
             state->font_encoding = val;
+            break;
+        }
         }
     }
+    x->pwr = pwr;
+    x->nested = nested;
+}
 
-    return p;
+/**
+ * \brief Parse style override tags.
+ * \param p start of the block, which must be '{'
+ * \param end end of the block, which must be '}'
+ * \return end
+ */
+char *ass_parse_tags(RenderContext *state, char *p, char *end)
+{
+    TagToken tokens[TAG_CHUNK_SIZE];
+    TagCompiler c = {
+        .start = p,
+        .tokens = tokens,
+        .capacity = TAG_CHUNK_SIZE,
+        .state = state,
+        .exec = { .pwr = 1. },
+    };
+    compile_tags(&c, p, end, false);
+    flush_tags(&c);
+    return end;
 }
 
 void ass_apply_transition_effects(RenderContext *state)
