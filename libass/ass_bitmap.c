@@ -91,11 +91,11 @@ void ass_synth_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     if (--be) {
         be_blur_pre(buf, stride, w, h);
         do {
-            engine->be_blur(buf, stride, w, h, tmp);
+            ENGINE_CALL(engine, be_blur, buf, stride, w, h, tmp);
         } while (--be);
         be_blur_post(buf, stride, w, h);
     }
-    engine->be_blur(buf, stride, w, h, tmp);
+    ENGINE_CALL(engine, be_blur, buf, stride, w, h, tmp);
     ass_blur_free_tmp(ctx, tmp);
 }
 

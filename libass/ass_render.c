@@ -816,9 +816,9 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
 
             // Blend together
             memcpy(nbuffer, abuffer, ((ah - 1) * as) + aw);
-            render_priv->engine.imul_bitmaps(nbuffer + atop * as + aleft, as,
-                                             bbuffer + btop * bs + bleft, bs,
-                                             w, h);
+            ENGINE_CALL(&render_priv->engine, imul_bitmaps,
+                        nbuffer + atop * as + aleft, as,
+                        bbuffer + btop * bs + bleft, bs, w, h);
         } else {
             // Regular clip
             if (ax + aw < bx || ay + ah < by || ax > bx + bw ||
@@ -834,10 +834,10 @@ static void blend_vector_clip(RenderContext *state, ASS_Image *head)
                 break;
 
             // Blend together
-            render_priv->engine.mul_bitmaps(nbuffer, ns,
-                                            abuffer + atop * as + aleft, as,
-                                            bbuffer + btop * bs + bleft, bs,
-                                            w, h);
+            ENGINE_CALL(&render_priv->engine, mul_bitmaps, nbuffer, ns,
+                        abuffer + atop * as + aleft, as,
+                        bbuffer + btop * bs + bleft, bs,
+                        w, h);
             cur->dst_x += aleft;
             cur->dst_y += atop;
             cur->w = w;
@@ -2732,9 +2732,9 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
             assert(x >= 0 && x + src->w <= dst->w);
             assert(y >= 0 && y + src->h <= dst->h);
             unsigned char *buf = dst->buffer + y * dst->stride + x;
-            render_priv->engine.add_bitmaps(buf, dst->stride,
-                                            src->buffer, src->stride,
-                                            src->w, src->h);
+            ENGINE_CALL(&render_priv->engine, add_bitmaps, buf, dst->stride,
+                        src->buffer, src->stride,
+                        src->w, src->h);
         }
     }
     if (!bord && n_bm_o == 1) {
@@ -2757,9 +2757,9 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
             assert(x >= 0 && x + src->w <= dst->w);
             assert(y >= 0 && y + src->h <= dst->h);
             unsigned char *buf = dst->buffer + y * dst->stride + x;
-            render_priv->engine.add_bitmaps(buf, dst->stride,
-                                            src->buffer, src->stride,
-                                            src->w, src->h);
+            ENGINE_CALL(&render_priv->engine, add_bitmaps, buf, dst->stride,
+                        src->buffer, src->stride,
+                        src->w, src->h);
         }
     }
 

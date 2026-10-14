@@ -255,17 +255,17 @@ bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     if (!tmp)
         return false;
 
-    engine->stripe_unpack(tmp, bm->buffer, bm->stride, w, h);
+    ENGINE_CALL(engine, stripe_unpack, tmp, bm->buffer, bm->stride, w, h);
     int16_t *buf[2] = {tmp, tmp + size};
     int index = 0;
 
     for (int i = 0; i < blur_y.level; i++) {
-        engine->shrink_vert(buf[index ^ 1], buf[index], w, h);
+        ENGINE_CALL(engine, shrink_vert, buf[index ^ 1], buf[index], w, h);
         h = (h + 5) >> 1;
         index ^= 1;
     }
     for (int i = 0; i < blur_x.level; i++) {
-        engine->shrink_horz(buf[index ^ 1], buf[index], w, h);
+        ENGINE_CALL(engine, shrink_horz, buf[index ^ 1], buf[index], w, h);
         w = (w + 5) >> 1;
         index ^= 1;
     }
@@ -278,12 +278,12 @@ bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     h += 2 * blur_y.radius;
     index ^= 1;
     for (int i = 0; i < blur_x.level; i++) {
-        engine->expand_horz(buf[index ^ 1], buf[index], w, h);
+        ENGINE_CALL(engine, expand_horz, buf[index ^ 1], buf[index], w, h);
         w = 2 * w + 4;
         index ^= 1;
     }
     for (int i = 0; i < blur_y.level; i++) {
-        engine->expand_vert(buf[index ^ 1], buf[index], w, h);
+        ENGINE_CALL(engine, expand_vert, buf[index ^ 1], buf[index], w, h);
         h = 2 * h + 4;
         index ^= 1;
     }
@@ -296,7 +296,7 @@ bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     bm->left -= ((blur_x.radius + 4) << blur_x.level) - 4;
     bm->top  -= ((blur_y.radius + 4) << blur_y.level) - 4;
 
-    engine->stripe_pack(bm->buffer, bm->stride, buf[index], w, h);
+    ENGINE_CALL(engine, stripe_pack, bm->buffer, bm->stride, buf[index], w, h);
     ass_blur_free_tmp(ctx, tmp);
     return true;
 }
