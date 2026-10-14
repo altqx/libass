@@ -32,6 +32,12 @@
 
 // Always enable native-endian mode, since we don't care about cross-platform consistency of the hash
 #define WYHASH_LITTLE_ENDIAN 1
+// Hashes are only used to pick buckets, so prefer the variant with plain
+// 64-bit products where a full 128-bit product is slow: it becomes
+// a __multi3 call on wasm and needs carry propagation on 32-bit targets
+#if defined(__wasm__) || (!defined(__SIZEOF_INT128__) && UINTPTR_MAX <= UINT32_MAX)
+#define WYHASH_32BIT_MUM 1
+#endif
 #include "wyhash.h"
 
 // With wyhash any arbitrary 64 bit value will suffice
