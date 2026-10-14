@@ -987,6 +987,141 @@ static void test_set_style(void)
     ass_set_style_overrides(library, NULL);
 }
 
+static uint64_t render_events_hash(ASS_Track *track, const int *eids, int n,
+                                   long long t, int flags)
+{
+    return hash_frame(ass_render_events(renderer, track, eids, n, t, flags, NULL));
+}
+
+/* parse the header plus the given event lines of a script */
+static ASS_Track *parse_subset(const Script *s, const int *line_ids, int n)
+{
+    Script sub = *s;
+    Line *lines = xmalloc((n + 1) * sizeof(*lines));
+    for (int i = 0; i < n; i++)
+        lines[i] = s->lines[line_ids[i]];
+    sub.lines = lines;
+    sub.n_lines = n;
+    size_t len;
+    char *text = script_text(&sub, &len);
+    ASS_Track *track = parse(text, len);
+    free(text);
+    free(lines);
+    return track;
+}
+
+static void test_render_events_script(const char *name)
+{
+    size_t len;
+    char *text = load_script(name, &len);
+    if (!text) {
+        CHECK(0, "cannot read %s", name);
+        return;
+    }
+    Script s;
+    script_init(&s, text);
+    ASS_Track *track = parse(text, len);
+    ASS_Track *other = parse(text, len);
+    free(text);
+
+    int *line_of = xmalloc((track->n_events + 1) * sizeof(int));
+    for (int i = 0, e = 0; i < s.n_lines; i++)
+        if (s.lines[i].is_event)
+            line_of[e++] = i;
+
+    // a single event renders as ass_render_frame renders a track with only that event
+    for (int e = 0; e < track->n_events; e++) {
+        const ASS_Event *ev = track->events + e;
+        long long t = ev->Start + ev->Duration / 2;
+        ASS_Track *single = parse_subset(&s, line_of + e, 1);
+        uint64_t ref = render_hash(renderer, single, t);
+        ass_free_track(single);
+        CHECK(render_events_hash(track, &e, 1, t, 0) == ref,
+              "%s: event %d alone differs from a one-event track", name, e);
+        CHECK(render_events_hash(track, &e, 1, t, ASS_RENDER_EVENTS_NO_COLLISIONS) == ref,
+              "%s: event %d alone (no collisions) differs from a one-event track", name, e);
+        frames_compared += 2;
+        frames_with_images += 2 * (ref != hash_frame(NULL));
+    }
+
+    // a subset renders as ass_render_frame renders a fresh track with only those events,
+    // and does not change what ass_render_frame produces on the full track
+    int *eids = xmalloc((track->n_events + 1) * sizeof(int));
+    int *lines = xmalloc((track->n_events + 1) * sizeof(int));
+    for (int k = 0; k < 60; k++) {
+        long long t = rnd((uint32_t) (s.max_end + 1));
+        CHECK(render_hash(renderer, track, t) == render_hash(renderer, other, t),
+              "%s: ass_render_events changed a later ass_render_frame at %lld ms", name, t);
+
+        int n = 0;
+        for (int e = 0; e < track->n_events; e++)
+            if (rnd(3)) {
+                eids[n] = e;
+                lines[n] = line_of[e];
+                n++;
+            }
+        long long t2 = rnd(4) ? t : (long long) rnd((uint32_t) (s.max_end + 1));
+        ASS_Track *subset = parse_subset(&s, lines, n);
+        uint64_t ref = render_hash(renderer, subset, t2);
+        ass_free_track(subset);
+        // shuffle: the order of eids does not matter
+        for (int i = n - 1; i > 0; i--) {
+            int j = rnd(i + 1), tmp = eids[i];
+            eids[i] = eids[j];
+            eids[j] = tmp;
+        }
+        CHECK(render_events_hash(track, eids, n, t2, 0) == ref,
+              "%s: subset of %d events at %lld ms differs from a fresh subset track",
+              name, n, t2);
+        frames_compared++;
+        frames_with_images += ref != hash_frame(NULL);
+    }
+    free(eids);
+    free(lines);
+    free(line_of);
+    ass_free_track(other);
+    ass_free_track(track);
+    script_free(&s);
+}
+
+static void test_render_events(void)
+{
+    size_t len;
+    char *text = load_script("collide", &len);
+    ASS_Track *track = parse(text, len);
+    free(text);
+    int all[1024], n = track->n_events < 1024 ? track->n_events : 1024;
+    for (int i = 0; i < n; i++)
+        all[i] = i;
+    int change = -1;
+
+    CHECK(!ass_render_events(renderer, track, all, n, 1000, 2, &change) && change == 2,
+          "unknown flags");
+    change = -1;
+    CHECK(!ass_render_events(renderer, track, all, -1, 1000, 0, &change) && change == 2,
+          "negative n_eids");
+    change = -1;
+    CHECK(!ass_render_events(renderer, track, NULL, 3, 1000, 0, &change) && change == 2,
+          "NULL eids");
+
+    // detect_change compares with the previous call of either function
+    ASS_Image *a = ass_render_events(renderer, track, all, n, 1000, 0, &change);
+    CHECK(a, "all events at 1000 ms: no images");
+    ass_render_events(renderer, track, all, n, 1000, 0, &change);
+    CHECK(change == 0, "same events twice: detect_change %d", change);
+    ass_render_frame(renderer, track, 1000, &change);
+    CHECK(change == 0, "ass_render_frame after the same events: detect_change %d", change);
+    int bad[] = { -1, n, 1 << 30 };
+    CHECK(!ass_render_events(renderer, track, bad, 3, 1000, 0, &change) && change == 2,
+          "only invalid ids: images or detect_change %d", change);
+    CHECK(!ass_render_events(renderer, track, NULL, 0, 1000, 0, &change) && change == 0,
+          "no events after an empty frame: detect_change %d", change);
+    ass_free_track(track);
+
+    for (size_t i = 0; i < N_SCRIPTS; i++)
+        test_render_events_script(scripts[i]);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc > 1)
@@ -1009,6 +1144,7 @@ int main(int argc, char *argv[])
 
     test_splice();
     test_set_style();
+    test_render_events();
 
     ass_renderer_done(renderer);
     ass_library_done(library);

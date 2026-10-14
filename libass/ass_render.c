@@ -3301,8 +3301,12 @@ static int fit_rect(Rect *s, Rect *fixed, int *cnt, int dir)
     return shift;
 }
 
-static void
-fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
+/**
+ * \brief Return room for the placed rectangles of the colliding events in
+ * imgs[0..cnt), or NULL if there are none or allocation fails.
+ */
+static Rect *get_collision_scratch(ASS_Renderer *render_priv,
+                                   EventImages *imgs, int cnt)
 {
     int participants = 0;
     for (int i = 0; i < cnt; i++) {
@@ -3310,18 +3314,52 @@ fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
             participants++;
     }
     if (!participants)
-        return;
+        return NULL;
 
     if (participants > render_priv->collision_scratch_size) {
         Rect *scratch = ass_realloc_array(render_priv->collision_scratch,
                                           participants, sizeof(*scratch));
         if (!scratch)
-            return;
+            return NULL;
         render_priv->collision_scratch = scratch;
         render_priv->collision_scratch_size = participants;
     }
+    return render_priv->collision_scratch;
+}
 
-    Rect *used = render_priv->collision_scratch;
+/**
+ * \brief Place colliding events as fix_collisions places them on a track
+ * without placement history, without reading or writing event render_priv.
+ */
+static void
+fix_collisions_fresh(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
+{
+    Rect *used = get_collision_scratch(render_priv, imgs, cnt);
+    if (!used)
+        return;
+
+    int cnt_used = 0;
+    for (int i = 0; i < cnt; ++i) {
+        if (!imgs[i].detect_collisions || !imgs[i].height || !imgs[i].width)
+            continue;
+        Rect s;
+        s.y0 = imgs[i].top;
+        s.y1 = imgs[i].top + imgs[i].height;
+        s.x0 = imgs[i].left;
+        s.x1 = imgs[i].left + imgs[i].width;
+        int shift = fit_rect(&s, used, &cnt_used, imgs[i].shift_direction);
+        if (shift)
+            shift_event(render_priv, imgs + i, shift);
+    }
+}
+
+static void
+fix_collisions(ASS_Renderer *render_priv, EventImages *imgs, int cnt)
+{
+    Rect *used = get_collision_scratch(render_priv, imgs, cnt);
+    if (!used)
+        return;
+
     int cnt_used = 0;
     int i, j;
 
@@ -3531,6 +3569,92 @@ static bool update_event_blocks(ASS_Track *track)
 }
 
 /**
+ * \brief Render an event into the next free entry of priv->eimg.
+ * \return false if priv->eimg could not be grown
+ */
+static inline bool
+render_event_images(ASS_Renderer *priv, ASS_Event *event, int *cnt)
+{
+    if (*cnt >= priv->eimg_size) {
+        EventImages *eimg = ass_realloc_array(priv->eimg,
+                                              priv->eimg_size + 100,
+                                              sizeof(*eimg));
+        if (!eimg) {
+            ass_msg(priv->library, MSGL_ERR,
+                    "Failed to allocate event images");
+            return false;
+        }
+        priv->eimg = eimg;
+        priv->eimg_size += 100;
+    }
+    if (ass_render_event(&priv->state, event, priv->eimg + *cnt))
+        (*cnt)++;
+    return true;
+}
+
+typedef enum {
+    COLLISIONS_NONE,
+    COLLISIONS_FRESH,   // as on a track without placement history
+    COLLISIONS_TRACKED, // keep and update the placement in event render_priv
+} CollisionMode;
+
+/**
+ * \brief Place, sort and link the cnt rendered events in priv->eimg into
+ * the frame's image list and release the previous frame.
+ */
+static ASS_Image *finish_frame(ASS_Renderer *priv, int cnt,
+                               CollisionMode collisions, int *detect_change)
+{
+    // sort by layer
+    if (cnt > 0)
+        qsort(priv->eimg, cnt, sizeof(EventImages), cmp_event_layer);
+
+    // place each group of events with the same layer
+    if (collisions != COLLISIONS_NONE) {
+        void (*fix)(ASS_Renderer *, EventImages *, int) =
+            collisions == COLLISIONS_TRACKED ? fix_collisions : fix_collisions_fresh;
+        EventImages *last = priv->eimg;
+        for (int i = 1; i < cnt; i++)
+            if (last->event->Layer != priv->eimg[i].event->Layer) {
+                fix(priv, last, priv->eimg + i - last);
+                last = priv->eimg + i;
+            }
+        if (cnt > 0)
+            fix(priv, last, priv->eimg + cnt - last);
+    }
+
+    // concat lists, removing fully transparent bitmaps
+    ASS_Image **tail = &priv->images_root;
+    for (int i = 0; i < cnt; i++) {
+        ASS_Image *cur = priv->eimg[i].imgs;
+        while (cur) {
+            if (_a(cur->color) == 0xFF) {
+                cur = ass_free_image(priv, cur);
+                continue;
+            }
+
+            *tail = cur;
+            tail = &cur->next;
+            cur = cur->next;
+        }
+    }
+
+    // If the last image was skipped in the above loop, *tail may not be NULL and needs to be set to NULL.
+    *tail = NULL;
+
+    ass_frame_ref(priv->images_root);
+
+    if (detect_change)
+        *detect_change = ass_detect_change(priv);
+
+    // free the previous image list
+    ass_frame_unref(priv, priv->prev_images_root);
+    priv->prev_images_root = NULL;
+
+    return priv->images_root;
+}
+
+/**
  * \brief render a frame
  * \param priv library handle
  * \param track track
@@ -3572,69 +3696,46 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         // unpredictable for events that are not in time order
         if ((event->Start <= now)
             & (now < (event->Start + event->Duration))) {
-            if (cnt >= priv->eimg_size) {
-                EventImages *eimg = ass_realloc_array(priv->eimg,
-                                                      priv->eimg_size + 100,
-                                                      sizeof(*eimg));
-                if (!eimg) {
-                    ass_msg(priv->library, MSGL_ERR,
-                            "Failed to allocate event images");
-                    break;
-                }
-                priv->eimg = eimg;
-                priv->eimg_size += 100;
-            }
-            if (ass_render_event(&priv->state, event, priv->eimg + cnt))
-                cnt++;
+            if (!render_event_images(priv, event, &cnt))
+                break;
         }
     }
 
-    // sort by layer
-    if (cnt > 0)
-        qsort(priv->eimg, cnt, sizeof(EventImages), cmp_event_layer);
-
-    // call fix_collisions for each group of events with the same layer
-    EventImages *last = priv->eimg;
-    for (int i = 1; i < cnt; i++)
-        if (last->event->Layer != priv->eimg[i].event->Layer) {
-            fix_collisions(priv, last, priv->eimg + i - last);
-            last = priv->eimg + i;
-        }
-    if (cnt > 0)
-        fix_collisions(priv, last, priv->eimg + cnt - last);
-
-    // concat lists, removing fully transparent bitmaps
-    ASS_Image **tail = &priv->images_root;
-    for (int i = 0; i < cnt; i++) {
-        ASS_Image *cur = priv->eimg[i].imgs;
-        while (cur) {
-            if (_a(cur->color) == 0xFF) {
-                cur = ass_free_image(priv, cur);
-                continue;
-            }
-
-            *tail = cur;
-            tail = &cur->next;
-            cur = cur->next;
-        }
-    }
-
-    // If the last image was skipped in the above loop, *tail may not be NULL and needs to be set to NULL.
-    *tail = NULL;
-
-    ass_frame_ref(priv->images_root);
-
-    if (detect_change)
-        *detect_change = ass_detect_change(priv);
-
-    // free the previous image list
-    ass_frame_unref(priv, priv->prev_images_root);
-    priv->prev_images_root = NULL;
+    ASS_Image *images = finish_frame(priv, cnt, COLLISIONS_TRACKED, detect_change);
 
     if (track->parser_priv->prune_delay >= 0)
         ass_prune_events(track, now - track->parser_priv->prune_delay);
 
-    return priv->images_root;
+    return images;
+}
+
+ASS_Image *ass_render_events(ASS_Renderer *priv, ASS_Track *track,
+                             const int *eids, int n_eids, long long now,
+                             int flags, int *detect_change)
+{
+    if (n_eids < 0 || (n_eids && !eids) ||
+            (flags & ~ASS_RENDER_EVENTS_NO_COLLISIONS) ||
+            !ass_start_frame(priv, track, now)) {
+        if (detect_change)
+            *detect_change = 2;
+        return NULL;
+    }
+
+    int cnt = 0;
+    for (int i = 0; i < n_eids; i++) {
+        if (eids[i] < 0 || eids[i] >= track->n_events)
+            continue;
+        ASS_Event *event = track->events + eids[i];
+        if (event->Start <= now && now < event->Start + event->Duration) {
+            if (!render_event_images(priv, event, &cnt))
+                break;
+        }
+    }
+
+    return finish_frame(priv, cnt,
+                        flags & ASS_RENDER_EVENTS_NO_COLLISIONS ?
+                            COLLISIONS_NONE : COLLISIONS_FRESH,
+                        detect_change);
 }
 
 /**

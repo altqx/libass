@@ -24,7 +24,7 @@
 #include <stdarg.h>
 #include "ass_types.h"
 
-#define LIBASS_VERSION 0x01705030
+#define LIBASS_VERSION 0x01705040
 
 #ifdef __cplusplus
 extern "C" {
@@ -693,6 +693,42 @@ void ass_set_cache_limits(ASS_Renderer *priv, int glyph_max,
  */
 ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
                             long long now, int *detect_change);
+
+/**
+ * \brief Render a frame from a subset of a track's events.
+ * \param priv renderer handle
+ * \param track subtitle track
+ * \param eids ids of the events that may take part; ids outside
+ *        [0, n_events) are ignored, and each id should appear at most once
+ * \param n_eids number of entries in eids (may be 0)
+ * \param now video timestamp in milliseconds
+ * \param flags 0 or ASS_RENDER_EVENTS_NO_COLLISIONS
+ * \param detect_change as for ass_render_frame
+ * \return the image list, or NULL if nothing is shown or an argument is
+ *         invalid (unknown flags, n_eids < 0, eids NULL with n_eids > 0)
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_RENDER_EVENTS.
+ *
+ * Works like ass_render_frame, but only the listed events that are active
+ * at now are rendered. Collision placement runs among them as on a freshly
+ * parsed track and neither reads nor writes the placement history that
+ * ass_render_frame keeps in the events, so a track can be rendered with
+ * this function in between ass_render_frame calls without changing what
+ * those calls produce. A single event renders as ass_render_frame renders
+ * a track that contains only that event. With
+ * ASS_RENDER_EVENTS_NO_COLLISIONS, events are not moved to avoid each other
+ * at all. Events are not pruned (see ass_configure_prune).
+ *
+ * The image list follows the same rules as one from ass_render_frame: it is
+ * valid until the next ass_render_frame or ass_render_events call on this
+ * renderer, and detect_change compares with the previous call of either.
+ */
+#define LIBASS_HAS_RENDER_EVENTS 1
+#define ASS_RENDER_EVENTS_NO_COLLISIONS 1
+ASS_Image *ass_render_events(ASS_Renderer *priv, ASS_Track *track,
+                             const int *eids, int n_eids, long long now,
+                             int flags, int *detect_change);
 
 /**
  * 
