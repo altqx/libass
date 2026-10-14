@@ -96,6 +96,23 @@ if enable_asm
 
     if asm_is_nasm
         libass_src += asm_sources
+    elif asm_is_clang
+        foreach asm_source : asm_sources
+            asm_output = fs.stem(asm_source) + '.obj'
+            libass_src += custom_target(
+                asm_output,
+                input: asm_source,
+                output: asm_output,
+                depends: config_h,
+                depend_files: files('aarch64/asm.S'),
+                command: [asm_clang] + asm_clang_args + asm_args + [
+                    '-c',
+                    '@INPUT@',
+                    '-o',
+                    '@OUTPUT@',
+                ],
+            )
+        endforeach
     else
         asm_lib = static_library(
             'ass_asm',

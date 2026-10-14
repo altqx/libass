@@ -246,7 +246,10 @@ endif
 enable_asm = false
 # used in libass/meson.build
 asm_is_nasm = false
+asm_is_clang = false
 asm_args = []
+asm_clang = []
+asm_clang_args = []
 
 # ASM architecture variables
 asm_option = get_option('asm')
@@ -319,9 +322,30 @@ if not asm_option.disabled()
         endif
     elif generic_cpu_family == 'aarch64'
         enable_asm = true
-        conf.set('ARCH_AARCH64', 1)
         if host_system == 'darwin'
             asm_args += '-DPREFIX'
+        elif host_system == 'windows' and cc.get_argument_syntax() == 'msvc' and cc.get_id() != 'clang-cl'
+            # MSVC cannot compile GNU-style AArch64 .S sources; assemble them
+            # with clang (used in libass/meson.build and checkasm/meson.build)
+            asm_clang = find_program('clang', required: false)
+            if asm_clang.found()
+                asm_is_clang = true
+                asm_clang_args = [
+                    '--target=arm64-pc-windows-msvc',
+                    '-I' + meson.project_build_root(),
+                    '-I' + (meson.project_source_root() / 'libass'),
+                ]
+            else
+                warning(
+                    'clang was not found; ASM functions are disabled. MSVC ' +
+                    'cannot build the AArch64 assembly; install clang for a ' +
+                    'significantly faster libass build.',
+                )
+                enable_asm = false
+            endif
+        endif
+        if enable_asm
+            conf.set('ARCH_AARCH64', 1)
         endif
     else
         warning(

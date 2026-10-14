@@ -18,7 +18,26 @@ checkasm_asm_sources = []
 if generic_cpu_family == 'x86'
     checkasm_src += checkasm_src_x86
 elif generic_cpu_family == 'aarch64'
-    checkasm_src += checkasm_src_aarch64
+    if asm_is_clang
+        foreach asm_source : checkasm_src_aarch64
+            asm_output = fs.stem(asm_source) + '.obj'
+            checkasm_src += custom_target(
+                asm_output,
+                input: asm_source,
+                output: asm_output,
+                depends: config_h,
+                depend_files: files('../libass/aarch64/asm.S'),
+                command: [asm_clang] + asm_clang_args + asm_args + [
+                    '-c',
+                    '@INPUT@',
+                    '-o',
+                    '@OUTPUT@',
+                ],
+            )
+        endforeach
+    else
+        checkasm_src += checkasm_src_aarch64
+    endif
 endif
 
 libass_checkasm = executable(
