@@ -247,6 +247,13 @@ static int ass_get_next_grapheme_cluster(char **str, unsigned *out, int out_cap)
     out[count++] = prev;
 
     while (*p) {
+        // Override blocks and escapes are markup, not text: a cluster never
+        // takes in a '{' or '\\', even after a Prepend character that would
+        // otherwise join the next character into its cluster. The caller
+        // then sees them at the same positions as upstream libass does.
+        if (*p == '{' || *p == '\\')
+            break;
+
         char *next_p = p;
         unsigned curr = ass_utf8_get_char(&next_p);
 

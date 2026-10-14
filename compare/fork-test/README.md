@@ -1,8 +1,9 @@
 Fork test cases
 ===============
 
-Cases for rendering behaviour that differs from libass 0.17.5, for use with
-`compare` (see `../README.md`) and with pixel-hash harnesses:
+Cases for the fork's text parsing and for rendering behaviour that differs
+from libass 0.17.5, for use with `compare` (see `../README.md`) and with
+pixel-hash harnesses:
 
 ```
 compare -i compare/fork-test -p 0
@@ -11,8 +12,9 @@ compare -i compare/fork-test -p 0
 * `grapheme.ass`: grapheme cluster handling in text parsing (combining marks,
   Devanagari, Thai, ZWJ emoji sequences, regional indicator flags, conjoining
   Hangul jamo, clusters longer than the parser's 32-codepoint buffer, override
-  tags and escapes right after a combining mark and after
-  Grapheme_Cluster_Break=Prepend characters). One case per second.
+  tags and escapes right after a combining mark, and override tags, every
+  escape, a tab, a non-escape backslash, an unclosed `{` and a drawing right
+  after Grapheme_Cluster_Break=Prepend characters). One case per second.
 * `cmap.ass`: symbol-cmap fonts with different base codes and a legacy
   simplified Arabic font (charset 178) with a Unicode cmap. One case per
   second.
@@ -37,17 +39,10 @@ Fonts:
 Differences from libass 0.17.5 (`4a05d81`), checked frame by frame at 20 ms
 steps:
 
-* `grapheme.ass` 0-8 s (combining marks, Devanagari, Thai, ZWJ sequences,
-  flags, jamo, long clusters, tags after combining marks): identical.
-* `grapheme.ass` 8-9 s: differs. The fork reads a whole grapheme cluster
-  before it looks for override tags and escapes, and a Prepend character
-  (U+0600, U+06DD) joins the next character into its cluster. A `{` or `\`
-  right after it is therefore taken as text: `{\c&H0000FF&}` and `{\b1}` are
-  shown literally instead of changing the colour and weight, and the
-  backslash of `\N`, `\n`, `\h` and `\{` is shown, so there is no line
-  break or non-breaking space, and the `{` of `\{` opens an override block.
-  This comes from the fork's grapheme cluster parsing (`4cb267f`,
-  `5fd215e`).
+* `grapheme.ass` 0-10 s: identical. The fork reads text by grapheme cluster,
+  but a cluster stops before `{` and `\`, so override blocks and escapes
+  right after a Prepend character (U+0600, U+06DD) work as in upstream
+  (8-10 s). Before that fix the fork showed them as text.
 * `cmap.ass` 0-1 s (symbol cmap at U+F020): identical.
 * `cmap.ass` 1-5 s: libass 0.17.5 draws nothing; these fonts render since
   upstream `057a533` (symbol base offset from the first cmap code, so cmaps

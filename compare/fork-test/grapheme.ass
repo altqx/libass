@@ -1,8 +1,10 @@
 [Script Info]
-; Golden and compare cases for behaviour that differs from libass 0.17.5:
-; grapheme cluster handling in text parsing (combining marks, Indic and Thai
-; clusters, ZWJ sequences, regional indicators, Hangul jamo, clusters longer
-; than the 32-codepoint buffer, override tags and escapes inside clusters).
+; Golden and compare cases for the fork's grapheme cluster handling in text
+; parsing: combining marks, Indic and Thai clusters, ZWJ sequences, regional
+; indicators, Hangul jamo, clusters longer than the 32-codepoint buffer,
+; override tags and escapes right after a combining mark, and override tags,
+; escapes, tabs and drawings right after Grapheme_Cluster_Break=Prepend
+; characters. Every case renders as in libass 0.17.5.
 ScriptType: v4.00+
 PlayResX: 640
 PlayResY: 360
@@ -30,3 +32,5 @@ Dialogue: 0,0:00:06.00,0:00:07.00,Latin,,0,0,0,,{\fs16}ẍ̈̈̈̈̈̈̈̈̈̈̈
 Dialogue: 0,0:00:07.00,0:00:08.00,Latin,,0,0,0,,é{\c&H0000FF&}x{\c} ä{\b1}b{\b0} ó{\fs60}o{\fs40} e{\c&H00FF00&}́{\c}\Né\Nf é\hg ũ\{v\}
 Dialogue: 0,0:00:08.00,0:00:09.00,Bits,,0,0,0,,{\an8}؀{\c&H0000FF&}123 ۝{\b1}45{\b0} ؀\h6
 Dialogue: 0,0:00:08.00,0:00:09.00,Bits,,0,0,0,,{\an2}؀\N789 ۝\nA ؀\{B\}
+Dialogue: 0,0:00:09.00,0:00:10.00,Bits,,0,0,0,,{\an8}؀\}1 ۝\x2 ؀	3 ؀؀{\b1}4{\b0}
+Dialogue: 0,0:00:09.00,0:00:10.00,Bits,,0,0,0,,{\an2}۝{\p1}m 0 0 l 20 0 20 20 0 20{\p0}5 ؀{\fs40}6{\fs28} ؀{7
