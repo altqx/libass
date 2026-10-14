@@ -3233,12 +3233,23 @@ static int fit_rect(Rect *s, Rect *fixed, int *cnt, int dir)
             shift = fixed[i].y0 - s->y1;
         }
 
-    fixed[*cnt].y0 = s->y0 + shift;
-    fixed[*cnt].y1 = s->y1 + shift;
-    fixed[*cnt].x0 = s->x0;
-    fixed[*cnt].x1 = s->x1;
+    // fixed[] is sorted by y0, insert after any entries with equal y0;
+    // the order among equal y0 does not affect the shifts computed above
+    Rect r = {
+        .x0 = s->x0, .y0 = s->y0 + shift,
+        .x1 = s->x1, .y1 = s->y1 + shift,
+    };
+    int lo = 0, hi = *cnt;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (fixed[mid].y0 <= r.y0)
+            lo = mid + 1;
+        else
+            hi = mid;
+    }
+    memmove(fixed + lo + 1, fixed + lo, (*cnt - lo) * sizeof(*fixed));
+    fixed[lo] = r;
     (*cnt)++;
-    qsort(fixed, *cnt, sizeof(*fixed), cmp_rect_y0);
 
     return shift;
 }
