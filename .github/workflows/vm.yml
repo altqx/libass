@@ -61,7 +61,7 @@ jobs:
 
           - name: 'ART (haiku64-qemu, Haiku, amd64)'
             os_image: haiku
-            os_version: r1beta5
+            os_version: r1beta6
             # no libubsan available, thus just SIGILL
             CC: 'gcc -fsanitize=undefined,float-cast-overflow -fno-sanitize-recover=all -fsanitize-undefined-trap-on-error'
 
@@ -115,7 +115,7 @@ jobs:
           path: './libass-tests'
 
       - name: Start VM
-        uses: cross-platform-actions/action@v1.4.0
+        uses: cross-platform-actions/action@v1.6.0
         with:
           operating_system: ${{ matrix.os_image }}
           version: ${{ matrix.os_version }}
