@@ -13,8 +13,10 @@ trap 'rm -rf "$tmp"' EXIT INT TERM
 
 # Every "ass_name(" in the preprocessed header is a function declaration:
 # ass.h has no inline functions, and function-pointer types are ASS_* names.
-${CC:-cc} -E -P -I"$src/libass" "$src/libass/ass.h" \
-    | tr '\n' ' ' \
+# Preprocess a .c file that includes it (tcc refuses to preprocess a .h).
+echo '#include "ass.h"' > "$tmp/ass_h.c"
+${CC:-cc} -E -I"$src/libass" "$tmp/ass_h.c" > "$tmp/ass_h.i"
+tr '\n' ' ' < "$tmp/ass_h.i" \
     | grep -oE '(^|[^A-Za-z0-9_])ass_[A-Za-z0-9_]+ *\(' \
     | sed -E 's/^[^a]*//; s/ *\($//' \
     | sort -u > "$tmp/header"
