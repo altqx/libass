@@ -2763,8 +2763,10 @@ size_t ass_composite_construct(void *key, void *value, void *priv)
     double r2x = restore_blur(k->filter.blur_x);
     double r2y = restore_blur(k->filter.blur_y);
     if (!(flags & FILTER_NONZERO_BORDER) || (flags & FILTER_BORDER_STYLE_3))
-        ass_synth_blur(&render_priv->engine, &v->bm, k->filter.be, r2x, r2y);
-    ass_synth_blur(&render_priv->engine, &v->bm_o, k->filter.be, r2x, r2y);
+        ass_synth_blur(&render_priv->engine, &render_priv->state.blur_ctx,
+                       &v->bm, k->filter.be, r2x, r2y);
+    ass_synth_blur(&render_priv->engine, &render_priv->state.blur_ctx,
+                   &v->bm_o, k->filter.be, r2x, r2y);
 
     if (!(flags & FILTER_FILL_IN_BORDER) && !(flags & FILTER_FILL_IN_SHADOW))
         ass_fix_outline(&v->bm, &v->bm_o);

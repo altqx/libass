@@ -213,6 +213,7 @@ struct render_context {
     TextInfo text_info;
     ASS_Shaper *shaper;
     RasterizerData rasterizer;
+    BlurContext blur_ctx;
 
     ASS_Event *event;
     ASS_Style *style;

@@ -140,11 +140,7 @@ static void calc_coeff(double mu[], int n, double r2, double mul)
     }
 }
 
-typedef struct {
-    int level, radius;
-    int16_t coeff[8];
-} BlurMethod;
-
+// Result must stay a pure function of r2: it's memoized in get_blur_method()
 static void find_best_method(BlurMethod *blur, double r2)
 {
     double mu[8];
@@ -165,18 +161,40 @@ static void find_best_method(BlurMethod *blur, double r2)
         blur->coeff[i] = (int) (0x10000 * mu[i] + 0.5);
 }
 
+static void get_blur_method(BlurContext *ctx, BlurMethod *blur, double r2)
+{
+    // Polynomial branch is cheap, skipping it also keeps key 0 (r2 == 0) free
+    if (!(r2 >= 0.5)) {
+        find_best_method(blur, r2);
+        return;
+    }
+
+    uint64_t key;
+    memcpy(&key, &r2, sizeof(key));
+    uint32_t hash = (uint32_t) (key ^ (key >> 32)) * 0x9E3779B1u;
+    unsigned index = hash >> (32 - BLUR_METHOD_CACHE_ORDER);
+    if (ctx->method_key[index] == key) {
+        *blur = ctx->method[index];
+        return;
+    }
+    find_best_method(blur, r2);
+    ctx->method_key[index] = key;
+    ctx->method[index] = *blur;
+}
+
 /**
  * \brief Perform approximate gaussian blur
  * \param r2x in: desired standard deviation along X axis squared
  * \param r2y in: desired standard deviation along Y axis squared
  */
-bool ass_gaussian_blur(const BitmapEngine *engine, Bitmap *bm, double r2x, double r2y)
+bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
+                       double r2x, double r2y)
 {
     BlurMethod blur_x, blur_y;
-    find_best_method(&blur_x, r2x);
+    get_blur_method(ctx, &blur_x, r2x);
     if (r2y == r2x)
         memcpy(&blur_y, &blur_x, sizeof(blur_y));
-    else find_best_method(&blur_y, r2y);
+    else get_blur_method(ctx, &blur_y, r2y);
 
     uint32_t w = bm->w, h = bm->h;
     int offset_x = ((2 * blur_x.radius + 9) << blur_x.level) - 5;
