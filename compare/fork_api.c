@@ -30,6 +30,7 @@
  * if the fixtures are missing, e.g. in a release tarball.
  */
 
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -1122,6 +1123,129 @@ static void test_render_events(void)
         test_render_events_script(scripts[i]);
 }
 
+typedef struct {
+    char *data;
+    size_t size;
+    int released;
+} FontRef;
+
+static void release_font(void *opaque)
+{
+    FontRef *ref = opaque;
+    ref->released++;
+    // freeing the bytes lets ASan catch any later read by libass
+    free(ref->data);
+    ref->data = NULL;
+}
+
+#define N_FONTS (sizeof(font_files) / sizeof(*font_files))
+
+static void add_fonts_by_ref(ASS_Library *lib, FontRef *refs, size_t from, size_t to)
+{
+    for (size_t i = from; i < to; i++) {
+        refs[i].data = read_file(srcdir, font_files[i], &refs[i].size);
+        refs[i].released = 0;
+        ass_add_font_ref(lib, font_files[i], refs[i].data, refs[i].size,
+                         release_font, refs + i);
+    }
+}
+
+static int count_released(const FontRef *refs, int expected)
+{
+    int ok = 1;
+    for (size_t i = 0; i < N_FONTS; i++)
+        ok &= refs[i].released == expected;
+    return ok;
+}
+
+/* render the font-sensitive scripts with renderer r and compare with expected[] */
+static void render_with_library(ASS_Library *lib, ASS_Renderer *r,
+                                const uint64_t *expected, uint64_t *out,
+                                const char *what)
+{
+    static const char *const names[] = {
+        "compare/test/sub1.ass", "compare/test/sub2.ass",
+        "compare/fork-test/grapheme.ass", "compare/fork-test/cmap.ass",
+    };
+    int k = 0;
+    for (size_t i = 0; i < sizeof(names) / sizeof(*names); i++) {
+        size_t len;
+        char *text = read_file(srcdir, names[i], &len);
+        ASS_Track *track = ass_read_memory(lib, text, len, NULL);
+        free(text);
+        if (!track) {
+            CHECK(0, "%s: cannot parse %s", what, names[i]);
+            return;
+        }
+        for (int e = 0; e < track->n_events && k < 64; e++, k++) {
+            const ASS_Event *ev = track->events + e;
+            uint64_t h = render_hash(r, track, ev->Start + ev->Duration / 2);
+            if (out)
+                out[k] = h;
+            if (expected)
+                CHECK(h == expected[k], "%s: %s event %d differs from copied fonts",
+                      what, names[i], e);
+        }
+        ass_free_track(track);
+    }
+}
+
+static void test_add_font_ref(void)
+{
+    uint64_t expected[64];
+    render_with_library(library, renderer, NULL, expected, "copied fonts");
+
+    FontRef refs[N_FONTS], refs2[N_FONTS];
+    ASS_Library *lib = ass_library_init();
+    ass_set_message_cb(lib, msg_callback, NULL);
+    add_fonts_by_ref(lib, refs, 0, N_FONTS);
+    ASS_Renderer *r = new_renderer(lib);
+    render_with_library(lib, r, expected, NULL, "fonts by reference");
+    CHECK(count_released(refs, 0), "fonts released while in use");
+
+    // ass_clear_fonts in the middle of a session, after the renderers that
+    // used the fonts are gone; the last frame is still referenced by r
+    ass_renderer_done(r);
+    CHECK(count_released(refs, 0), "fonts released by ass_renderer_done");
+    ass_clear_fonts(lib);
+    CHECK(count_released(refs, 1), "ass_clear_fonts did not release every font exactly once");
+
+    // a second set, half of it added after the renderer exists
+    add_fonts_by_ref(lib, refs2, 0, N_FONTS / 2);
+    r = new_renderer(lib);
+    add_fonts_by_ref(lib, refs2, N_FONTS / 2, N_FONTS);
+    render_with_library(lib, r, expected, NULL, "fonts by reference after ass_clear_fonts");
+
+    // teardown with the last frame still referenced by the renderer
+    ass_renderer_done(r);
+    CHECK(count_released(refs2, 0), "fonts released before ass_library_done");
+    ass_library_done(lib);
+    CHECK(count_released(refs2, 1), "ass_library_done did not release every font exactly once");
+    CHECK(count_released(refs, 1), "first font set released again");
+
+    // fonts that cannot be added are released at once
+    lib = ass_library_init();
+    ass_set_message_cb(lib, msg_callback, NULL);
+    FontRef bad[4];
+    memset(bad, 0, sizeof(bad));
+    for (int i = 0; i < 4; i++)
+        bad[i].data = xmalloc(16);
+    ass_add_font_ref(lib, NULL, bad[0].data, 16, release_font, bad + 0);
+    ass_add_font_ref(lib, "x", NULL, 16, release_font, bad + 1);
+    free(bad[1].data);
+    bad[1].data = NULL;
+    ass_add_font_ref(lib, "x", bad[2].data, 0, release_font, bad + 2);
+    ass_add_font_ref(lib, "x", bad[3].data, (size_t) INT_MAX + 1, release_font, bad + 3);
+    for (int i = 0; i < 4; i++)
+        CHECK(bad[i].released == 1, "rejected font %d released %d times", i, bad[i].released);
+
+    // without release, libass neither frees nor touches the caller's bytes
+    static const char not_a_font[] = "not a font";
+    ass_add_font_ref(lib, "static", not_a_font, sizeof(not_a_font), NULL, NULL);
+    ass_add_font_ref(lib, NULL, not_a_font, sizeof(not_a_font), NULL, NULL);
+    ass_library_done(lib);
+}
+
 int main(int argc, char *argv[])
 {
     if (argc > 1)
@@ -1145,6 +1269,7 @@ int main(int argc, char *argv[])
     test_splice();
     test_set_style();
     test_render_events();
+    test_add_font_ref();
 
     ass_renderer_done(renderer);
     ass_library_done(library);

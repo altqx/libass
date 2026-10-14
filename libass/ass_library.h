@@ -28,6 +28,11 @@ typedef struct {
     char *name;
     char *data;
     int size;
+    // added with ass_add_font_ref: data belongs to the caller, who is told
+    // with release(opaque) (if release is set) when libass no longer needs it
+    int is_ref;
+    void (*release)(void *opaque);
+    void *opaque;
 } ASS_Fontdata;
 
 struct ass_library {

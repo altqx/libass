@@ -1261,6 +1261,33 @@ void ass_add_font(ASS_Library *library, const char *name, const char *data,
                   int data_size);
 
 /**
+ * \brief Add a memory font without copying it.
+ * \param library library handle
+ * \param name attachment name
+ * \param data binary font data; must stay valid and unchanged until
+ *        release is called
+ * \param size data size in bytes (at most INT_MAX)
+ * \param release called with opaque once libass no longer uses data, i.e.
+ *        when ass_clear_fonts or ass_library_done runs; may be NULL if the
+ *        caller keeps data alive for as long as the library
+ * \param opaque passed to release
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_ADD_FONT_REF.
+ *
+ * Works like ass_add_font, but libass reads the font from data instead of a
+ * private copy. release is called exactly once for every call of this
+ * function: if the font cannot be added (NULL name or data, size 0 or above
+ * INT_MAX, or no memory), it is called before this function returns.
+ * As with ass_add_font, renderers pick the font up on their next frame, and
+ * ass_clear_fonts may only be called once all ASS_Track and ASS_Renderer
+ * instances of the library have been released.
+ */
+#define LIBASS_HAS_ADD_FONT_REF 1
+void ass_add_font_ref(ASS_Library *library, const char *name, const char *data,
+                      size_t size, void (*release)(void *opaque), void *opaque);
+
+/**
  * \brief Remove all fonts stored in an ass_library object.
  * This can only be called safely if all ASS_Track and ASS_Renderer instances
  * associated with the library handle have been released first.

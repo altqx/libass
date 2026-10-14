@@ -31,6 +31,7 @@ ass_read_file
 ass_read_memory
 ass_read_styles
 ass_add_font
+ass_add_font_ref
 ass_clear_fonts
 ass_step_sub
 ass_process_force_style

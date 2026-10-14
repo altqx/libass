@@ -20,6 +20,7 @@
 #include "ass_compat.h"
 
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,38 +104,73 @@ void ass_set_style_overrides(ASS_Library *priv, char **list)
         *q = strdup(*p);
 }
 
-void ass_add_font(ASS_Library *priv, const char *name, const char *data, int size)
+/**
+ * \brief Append an entry for a memory font to priv->fontdata.
+ * \return the entry with only its name set, or NULL on failure;
+ *         num_fontdata is not incremented yet
+ */
+static ASS_Fontdata *new_fontdata(ASS_Library *priv, const char *name)
 {
     size_t idx = priv->num_fontdata;
-    if (!name || !data || !size)
-        return;
     if (!(idx & (idx - 32)) && // power of two >= 32, or zero --> time for realloc
             !ASS_REALLOC_ARRAY(priv->fontdata, FFMAX(2 * idx, 32)))
+        return NULL;
+
+    ASS_Fontdata *fd = priv->fontdata + idx;
+    memset(fd, 0, sizeof(*fd));
+    fd->name = strdup(name);
+    return fd->name ? fd : NULL;
+}
+
+void ass_add_font(ASS_Library *priv, const char *name, const char *data, int size)
+{
+    if (!name || !data || size <= 0)
+        return;
+    ASS_Fontdata *fd = new_fontdata(priv, name);
+    if (!fd)
         return;
 
-    priv->fontdata[idx].name = strdup(name);
-    priv->fontdata[idx].data = malloc(size);
-
-    if (!priv->fontdata[idx].name || !priv->fontdata[idx].data)
-        goto error;
-
-    memcpy(priv->fontdata[idx].data, data, size);
-
-    priv->fontdata[idx].size = size;
+    fd->data = malloc(size);
+    if (!fd->data) {
+        free(fd->name);
+        return;
+    }
+    memcpy(fd->data, data, size);
+    fd->size = size;
 
     priv->num_fontdata++;
-    return;
+}
 
-error:
-    free(priv->fontdata[idx].name);
-    free(priv->fontdata[idx].data);
+void ass_add_font_ref(ASS_Library *priv, const char *name, const char *data,
+                      size_t size, void (*release)(void *opaque), void *opaque)
+{
+    ASS_Fontdata *fd = NULL;
+    if (priv && name && data && size && size <= INT_MAX)
+        fd = new_fontdata(priv, name);
+    if (!fd) {
+        if (release)
+            release(opaque);
+        return;
+    }
+
+    fd->data = (char *) data;
+    fd->size = (int) size;
+    fd->is_ref = 1;
+    fd->release = release;
+    fd->opaque = opaque;
+
+    priv->num_fontdata++;
 }
 
 void ass_clear_fonts(ASS_Library *priv)
 {
     for (size_t i = 0; i < priv->num_fontdata; i++) {
-        free(priv->fontdata[i].name);
-        free(priv->fontdata[i].data);
+        ASS_Fontdata *fd = priv->fontdata + i;
+        free(fd->name);
+        if (!fd->is_ref)
+            free(fd->data);
+        else if (fd->release)
+            fd->release(fd->opaque);
     }
     free(priv->fontdata);
     priv->fontdata = NULL;
