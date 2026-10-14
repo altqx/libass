@@ -42,6 +42,12 @@ typedef struct {
     int asc, desc;  // ascender/descender
 } OutlineHashValue;
 
+typedef struct {
+    bool valid;
+    size_t count;
+    struct tag_token *tokens;
+} TagsHashValue;
+
 // Create definitions for bitmap, outline and composite hash keys
 #define CREATE_STRUCT_DEFINITIONS
 #include "ass_cache_template.h"
@@ -112,5 +118,6 @@ Cache *ass_face_size_metrics_cache_create(void);
 Cache *ass_glyph_metrics_cache_create(void);
 Cache *ass_bitmap_cache_create(void);
 Cache *ass_composite_cache_create(void);
+Cache *ass_tags_cache_create(void);
 
 #endif                          /* LIBASS_CACHE_H */

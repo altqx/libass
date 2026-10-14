@@ -162,9 +162,11 @@ ASS_Renderer *ass_renderer_init(ASS_Library *library)
     priv->cache.outline_cache = ass_outline_cache_create();
     priv->cache.face_size_metrics_cache = ass_face_size_metrics_cache_create();
     priv->cache.metrics_cache = ass_glyph_metrics_cache_create();
+    priv->cache.tags_cache = ass_tags_cache_create();
     if (!priv->cache.font_cache || !priv->cache.bitmap_cache ||
         !priv->cache.composite_cache || !priv->cache.outline_cache ||
-        !priv->cache.face_size_metrics_cache || !priv->cache.metrics_cache)
+        !priv->cache.face_size_metrics_cache || !priv->cache.metrics_cache ||
+        !priv->cache.tags_cache)
         goto fail;
 
     priv->cache.glyph_max = GLYPH_CACHE_MAX;
@@ -214,6 +216,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     ass_cache_done(render_priv->cache.face_size_metrics_cache);
     ass_cache_done(render_priv->cache.metrics_cache);
     ass_cache_done(render_priv->cache.font_cache);
+    ass_cache_done(render_priv->cache.tags_cache);
 
     if (render_priv->fontselect)
         ass_fontselect_free(render_priv->fontselect);

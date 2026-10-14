@@ -895,6 +895,85 @@ static void compile_tags(TagCompiler *c, char *p, char *end, bool nested)
     }
 }
 
+/**
+ * \brief Count the tokens the {...} block from start to end may compile to.
+ * Every token except TAG_T_END consumes a different backslash. A TAG_T_END
+ * ends the body of a \t tag, which has two backslashes of its own: one for
+ * its name and one in its body.
+ */
+static size_t count_tags(char *start, char *end)
+{
+    size_t count = 0;
+    for (char *s = start; (s = memchr(s, '\\', end - s)); s++)
+        count++;
+    return count + count / 2;
+}
+
+/**
+ * \brief Compile the {...} block from start to end ('}') into tokens,
+ * which must have room for count_tags(start, end) elements.
+ * \return number of tokens
+ */
+static size_t build_tags(TagToken *tokens, size_t capacity,
+                         char *start, char *end)
+{
+    TagCompiler c = {
+        .start = start,
+        .tokens = tokens,
+        .capacity = capacity,
+    };
+    compile_tags(&c, start, end, false);
+    assert(c.count <= capacity);
+    return FFMIN(c.count, capacity);
+}
+
+// Blocks whose text or tokens are larger than this are not cached, so that
+// a single block cannot take up a large part of the cache. They are compiled
+// and applied in pieces every time instead, as when caching fails.
+#define MAX_CACHED_TAGS_SIZE (TAGS_CACHE_MAX_SIZE / 64)
+#define MAX_CACHED_TAGS_COUNT (MAX_CACHED_TAGS_SIZE / sizeof(TagToken))
+
+static bool is_cacheable(char *start, char *end)
+{
+    size_t len = end - start;
+    if (len >= MAX_CACHED_TAGS_SIZE)
+        return false;
+    // count_tags() is at most 1.5 times the length,
+    // so only long blocks need to be counted.
+    return len <= MAX_CACHED_TAGS_COUNT / 2 ||
+           count_tags(start, end) <= MAX_CACHED_TAGS_COUNT;
+}
+
+// Compile a {...} block for the tag cache. The key holds a copy of the block.
+size_t ass_tags_construct(void *key, void *value, void *priv)
+{
+    TagsHashKey *k = key;
+    TagsHashValue *v = value;
+    char *start = (char *) k->text.str;
+    char *end = start + k->text.len - 1;
+    size_t size = sizeof(TagsHashKey) + sizeof(TagsHashValue) + k->text.len + 1;
+
+    size_t capacity = count_tags(start, end);
+    v->tokens = ass_realloc_array(NULL, capacity, sizeof(TagToken));
+    v->valid = v->tokens;
+    v->count = 0;
+    if (!v->valid)
+        return size;
+    v->count = build_tags(v->tokens, capacity, start, end);
+
+    // Keep only the room that is used; for a block without \t,
+    // count_tags() reserves half as much again as it needs.
+    if (v->count < capacity) {
+        TagToken *tokens =
+            ass_realloc_array(v->tokens, v->count, sizeof(TagToken));
+        if (tokens) {
+            v->tokens = tokens;
+            capacity = v->count;
+        }
+    }
+    return size + capacity * sizeof(TagToken);
+}
+
 static uint32_t style_color(ASS_Style *style, int index)
 {
     switch (index) {
@@ -1391,6 +1470,32 @@ static void exec_tags(RenderContext *state, char *base, const TagToken *tok,
  */
 char *ass_parse_tags(RenderContext *state, char *p, char *end)
 {
+    ASS_Renderer *render_priv = state->renderer;
+
+    // Blocks without a backslash, such as comments, contain no tags.
+    if (!memchr(p, '\\', end - p))
+        return end;
+
+    // The tokens depend only on the content of the block, which is copied
+    // into the key, so this is safe even if the event text is replaced
+    // in place between frames.
+    if (is_cacheable(p, end)) {
+        Cache *cache = render_priv->cache.tags_cache;
+        TagsHashKey key = { .text = { p, end + 1 - p } };
+        TagsHashValue *val = ass_cache_get(cache, &key, NULL);
+        bool hit = val && val->valid;
+        if (hit) {
+            TagExecState x = { .pwr = 1. };
+            exec_tags(state, p, val->tokens, val->tokens + val->count, &x);
+        }
+        // Unlike the other caches, this is limited after every block,
+        // so that a frame with many different blocks cannot exceed it.
+        ass_cache_cut(cache, TAGS_CACHE_MAX_SIZE);
+        if (hit)
+            return end;
+    }
+
+    // The block is too large to cache or caching failed.
     TagToken tokens[TAG_CHUNK_SIZE];
     TagCompiler c = {
         .start = p,

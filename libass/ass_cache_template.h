@@ -102,6 +102,13 @@ START(drawing, drawing_hash_key)
     STRING(text)
 END(DrawingHashKey)
 
+// describes a block of override tags
+// on call to ass_cache_get(), text is a non-owning view;
+// its content is duplicated when inserted; the copy is freed when dropped
+START(tags, tags_hash_key)
+    STRING(text)
+END(TagsHashKey)
+
 // describes an offset outline
 // outline is refed when inserted and unrefed when dropped
 START(border, border_hash_key)

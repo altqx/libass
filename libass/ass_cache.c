@@ -271,6 +271,39 @@ const CacheDesc outline_cache_desc = {
 };
 
 
+// override tag cache
+static bool tags_key_move(void *dst, void *src)
+{
+    TagsHashKey *d = dst, *s = src;
+    if (!d)
+        return true;
+
+    d->text.str = ass_copy_string(s->text);
+    d->text.len = s->text.len;
+    return d->text.str;
+}
+
+static void tags_destruct(void *key, void *value)
+{
+    TagsHashKey *k = key;
+    TagsHashValue *v = value;
+    free(v->tokens);
+    free((char *) k->text.str);
+}
+
+size_t ass_tags_construct(void *key, void *value, void *priv);
+
+const CacheDesc tags_cache_desc = {
+    .hash_func = tags_hash,
+    .compare_func = tags_compare,
+    .key_move_func = tags_key_move,
+    .construct_func = ass_tags_construct,
+    .destruct_func = tags_destruct,
+    .key_size = sizeof(TagsHashKey),
+    .value_size = sizeof(TagsHashValue)
+};
+
+
 // font-face size metric cache
 static bool face_size_metrics_key_move(void *dst, void *src)
 {
@@ -634,4 +667,9 @@ Cache *ass_bitmap_cache_create(void)
 Cache *ass_composite_cache_create(void)
 {
     return ass_cache_create(&composite_cache_desc);
+}
+
+Cache *ass_tags_cache_create(void)
+{
+    return ass_cache_create(&tags_cache_desc);
 }
