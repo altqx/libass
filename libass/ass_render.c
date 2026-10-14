@@ -2793,6 +2793,7 @@ static void add_background(RenderContext *state, EventImages *event_images)
     ASS_Image *img = my_draw_bitmap(nbuffer, w, h, w, left, top,
                                     clr, NULL);
     if (img) {
+        img->type = IMAGE_TYPE_SHADOW;
         img->next = event_images->imgs;
         event_images->imgs = img;
     }
