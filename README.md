@@ -4,7 +4,9 @@ libass is a portable subtitle renderer for the ASS/SSA (Advanced Substation Alph
 
 About this fork
 ===============
-This is [altqx/libass](https://github.com/altqx/libass), a fork of upstream libass that feeds native and WebAssembly consumers (e.g. [AkariSub](https://github.com/altqx/akarisub) and HikariSub). It tracks upstream `master` and adds performance work and a few fork-only APIs. **Rendering output is bit-identical to upstream**: every change is checked frame by frame against upstream on x86-64, arm64 and wasm32.
+This is [altqx/libass](https://github.com/altqx/libass), a fork of upstream libass that feeds native and WebAssembly consumers (e.g. [AkariSub](https://github.com/altqx/akarisub) and HikariSub). It tracks upstream `master` and adds performance work and a few fork-only APIs. **The performance work does not change rendering output**: every change is checked frame by frame against the fork before it on x86-64, arm64 and wasm32.
+
+One older fork change does render differently from upstream libass: text is parsed by grapheme cluster, and a cluster is read before override tags and escapes are recognized. Right after a character with Grapheme_Cluster_Break=Prepend (U+0600-U+0605, U+06DD, U+070F, U+08E2, U+110BD), an override block (`{...}`) is therefore shown as text, and the backslash of an escape (`\N`, `\n`, `\h`, `\{`) is shown instead of the escape being interpreted. Combining marks, Indic and Thai clusters, ZWJ sequences, regional indicator flags, conjoining Hangul jamo and clusters longer than 32 codepoints render as in upstream. The cases are in `compare/fork-test`.
 
 Performance against upstream `60679ac`. Times are the minimum render-loop thread CPU time over 9-56 interleaved runs, pinned to one core. Machine: x86-64, Ryzen 5 5600, gcc 16.2, `-O3`:
 

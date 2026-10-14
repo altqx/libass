@@ -1,0 +1,32 @@
+[Script Info]
+; Golden and compare cases for behaviour that differs from libass 0.17.5:
+; grapheme cluster handling in text parsing (combining marks, Indic and Thai
+; clusters, ZWJ sequences, regional indicators, Hangul jamo, clusters longer
+; than the 32-codepoint buffer, override tags and escapes inside clusters).
+ScriptType: v4.00+
+PlayResX: 640
+PlayResY: 360
+WrapStyle: 2
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Latin,Noto Sans,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+Style: Deva,Noto Sans Devanagari,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+Style: Thai,Noto Sans Thai,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+Style: Hangul,Noto Sans CJK KR,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+Style: Emoji,ForkTest Emoji,40,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+Style: Bits,ForkTest Bits,28,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,5,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:01.00,Latin,,0,0,0,,é ǟ ǫ́ ñ Ź̵̧ q̣̇
+Dialogue: 0,0:00:01.00,0:00:02.00,Deva,,0,0,0,,क्षत्रिय नमस्ते हिन्दी द्विज
+Dialogue: 0,0:00:02.00,0:00:03.00,Thai,,0,0,0,,สวัสดีครับ น้ำ ที่นี่ กำ
+Dialogue: 0,0:00:03.00,0:00:04.00,Emoji,,0,0,0,,👨‍👩‍👧 👨 👩 👧 👨🏻 👩️
+Dialogue: 0,0:00:04.00,0:00:05.00,Emoji,,0,0,0,,🇯🇵 🇺🇸 🇯🇵🇺 🇺🇸🇯🇵
+Dialogue: 0,0:00:05.00,0:00:06.00,Hangul,,0,0,0,,한글 한글 가 하
+Dialogue: 0,0:00:06.00,0:00:07.00,Latin,,0,0,0,,{\fs16}ẍ̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈ ÿ̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈̈ ź́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́́w
+Dialogue: 0,0:00:07.00,0:00:08.00,Latin,,0,0,0,,é{\c&H0000FF&}x{\c} ä{\b1}b{\b0} ó{\fs60}o{\fs40} e{\c&H00FF00&}́{\c}\Né\Nf é\hg ũ\{v\}
+Dialogue: 0,0:00:08.00,0:00:09.00,Bits,,0,0,0,,{\an8}؀{\c&H0000FF&}123 ۝{\b1}45{\b0} ؀\h6
+Dialogue: 0,0:00:08.00,0:00:09.00,Bits,,0,0,0,,{\an2}؀\N789 ۝\nA ؀\{B\}
