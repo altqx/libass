@@ -56,7 +56,16 @@ typedef struct {
     // direct-mapped memo of find_best_method(), keyed by bits of r2, 0 = empty
     uint64_t method_key[1 << BLUR_METHOD_CACHE_ORDER];
     BlurMethod method[1 << BLUR_METHOD_CACHE_ORDER];
+
+    // scratch buffer reused by blur passes, aligned to 1 << engine->align_order,
+    // so a context must always be used with the same engine
+    void *tmp;
+    size_t tmp_size;
 } BlurContext;
+
+void ass_blur_context_done(BlurContext *ctx);
+void *ass_blur_alloc_tmp(const BitmapEngine *engine, BlurContext *ctx, size_t size);
+void ass_blur_free_tmp(BlurContext *ctx, void *tmp);
 
 void ass_synth_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
                     int be, double blur_r2x, double blur_r2y);

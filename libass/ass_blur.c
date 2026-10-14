@@ -182,6 +182,50 @@ static void get_blur_method(BlurContext *ctx, BlurMethod *blur, double r2)
     ctx->method[index] = *blur;
 }
 
+// Don't keep larger scratch buffers around, allocate them per call instead
+#define BLUR_TMP_MAX_RETAINED (4 << 20)
+
+void ass_blur_context_done(BlurContext *ctx)
+{
+    ass_aligned_free(ctx->tmp);
+    ctx->tmp = NULL;
+    ctx->tmp_size = 0;
+}
+
+/**
+ * \brief Get uninitialized scratch memory, release with ass_blur_free_tmp()
+ * \param engine in: must be the same for every call with this ctx
+ * \param ctx in/out: blur context owning the retained buffer
+ * \param size in: required size in bytes
+ * \return buffer aligned to 1 << engine->align_order or NULL on failure
+ */
+void *ass_blur_alloc_tmp(const BitmapEngine *engine, BlurContext *ctx, size_t size)
+{
+    size_t align = (size_t) 1 << engine->align_order;
+    if (size > BLUR_TMP_MAX_RETAINED) {
+        // don't hold both, a huge buffer dominates memory usage anyway
+        ass_blur_context_done(ctx);
+        return ass_aligned_alloc(align, size, false);
+    }
+
+    assert(!((uintptr_t) ctx->tmp & (align - 1)));
+    if (!ctx->tmp || size > ctx->tmp_size) {
+        size = FFMAX(size, FFMIN(2 * ctx->tmp_size, BLUR_TMP_MAX_RETAINED));
+        // free first to lower peak memory usage, old contents aren't needed
+        ass_blur_context_done(ctx);
+        ctx->tmp = ass_aligned_alloc(align, size, false);
+        if (ctx->tmp)
+            ctx->tmp_size = size;
+    }
+    return ctx->tmp;
+}
+
+void ass_blur_free_tmp(BlurContext *ctx, void *tmp)
+{
+    if (tmp != ctx->tmp)
+        ass_aligned_free(tmp);
+}
+
 /**
  * \brief Perform approximate gaussian blur
  * \param r2x in: desired standard deviation along X axis squared
@@ -207,7 +251,7 @@ bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     if (size > INT_MAX / 4)
         return false;
 
-    int16_t *tmp = ass_aligned_alloc(2 * stripe_width, 4 * size, false);
+    int16_t *tmp = ass_blur_alloc_tmp(engine, ctx, 4 * size);
     if (!tmp)
         return false;
 
@@ -246,14 +290,14 @@ bool ass_gaussian_blur(const BitmapEngine *engine, BlurContext *ctx, Bitmap *bm,
     assert(w == end_w && h == end_h);
 
     if (!ass_realloc_bitmap(engine, bm, w, h)) {
-        ass_aligned_free(tmp);
+        ass_blur_free_tmp(ctx, tmp);
         return false;
     }
     bm->left -= ((blur_x.radius + 4) << blur_x.level) - 4;
     bm->top  -= ((blur_y.radius + 4) << blur_y.level) - 4;
 
     engine->stripe_pack(bm->buffer, bm->stride, buf[index], w, h);
-    ass_aligned_free(tmp);
+    ass_blur_free_tmp(ctx, tmp);
     return true;
 }
 

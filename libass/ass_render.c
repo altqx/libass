@@ -112,6 +112,7 @@ static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
 static void render_context_done(RenderContext *state)
 {
     ass_rasterizer_done(&state->rasterizer);
+    ass_blur_context_done(&state->blur_ctx);
 
     if (state->shaper)
         ass_shaper_free(state->shaper);
