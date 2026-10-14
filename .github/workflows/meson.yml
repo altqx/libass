@@ -25,6 +25,19 @@ jobs:
               Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
               Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
 
+          - name: Windows (MSVC arm64)
+            os: windows-11-arm
+            arch: arm64
+            msvc: true
+            vs_component: Microsoft.VisualStudio.Component.VC.Tools.ARM64
+            shell: 'pwsh'
+            # MSVC cannot build the AArch64 assembly; meson assembles it with
+            # clang. Fail instead of silently building without assembly.
+            args: '-Ddefault_library=shared -Dasm=enabled'
+            devenv: |
+              Import-Module "$env:VS\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+              Enter-VsDevShell -VsInstallPath $env:VS -SkipAutomaticLocation -DevCmdArguments "-arch=arm64 -host_arch=arm64"
+
           - name: Windows (CLANG64)
             os: windows-latest
             msystem: CLANG64
@@ -119,7 +132,7 @@ jobs:
         if: matrix.config.msvc
         run: |
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $vsPath = & $vswhere -latest -products * -requires ${{ matrix.config.vs_component || 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64' }} -property installationPath
           if (-not $vsPath) { throw "Could not find a Visual Studio installation" }
           "VS=$vsPath"
           "VS=$vsPath" >> $env:GITHUB_ENV
@@ -129,7 +142,23 @@ jobs:
         # Install meson through pip to add it to PATH easily
         run: |
           python -m pip install meson
-          choco install nasm sccache
+          if ('${{ matrix.config.arch }}' -eq 'x64') {
+            choco install nasm sccache
+          }
+
+      - name: Find clang for the AArch64 assembly
+        if: matrix.config.msvc && matrix.config.arch == 'arm64'
+        run: |
+          $clang = Get-Command clang -ErrorAction SilentlyContinue
+          if (-not $clang) {
+            $dirs = @("$env:VS\VC\Tools\Llvm\ARM64\bin", "$env:ProgramFiles\LLVM\bin")
+            $dir = $dirs | Where-Object { Test-Path (Join-Path $_ 'clang.exe') } | Select-Object -First 1
+            if (-not $dir) { throw "Could not find clang" }
+            $dir >> $env:GITHUB_PATH
+            $clang = Get-Command (Join-Path $dir 'clang.exe')
+          }
+          "Using $($clang.Source)"
+          & $clang.Source --version
 
       - name: Install dependencies
         if: ${{ !matrix.config.msvc && !matrix.config.msystem}}
