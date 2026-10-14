@@ -200,6 +200,7 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
+    ass_atlas_state_free(render_priv, render_priv->atlas);
     ass_frame_unref(render_priv, render_priv->images_root);
     ass_frame_unref(render_priv, render_priv->prev_images_root);
     ASS_ImagePriv *pooled = render_priv->image_pool;

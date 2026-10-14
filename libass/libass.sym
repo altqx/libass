@@ -49,3 +49,5 @@ ass_free
 ass_prune_events
 ass_configure_prune
 ass_track_events_modified
+ass_frame_pack_atlas
+ass_frame_atlas_reset

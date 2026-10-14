@@ -39,6 +39,7 @@
 #include "ass_drawing.h"
 #include "ass_bitmap.h"
 #include "ass_rasterizer.h"
+#include "ass_atlas.h"
 
 #define GLYPH_CACHE_MAX 10000
 #define MEGABYTE (1024 * 1024)
@@ -361,6 +362,8 @@ struct ass_renderer {
     void *glyph_run_callback_user_data;
 
     ASS_Style user_override_style;
+
+    AtlasState *atlas;          // ass_frame_pack_atlas() state, lazily allocated
 };
 
 typedef struct render_priv {

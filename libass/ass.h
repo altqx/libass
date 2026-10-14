@@ -658,6 +658,172 @@ void ass_set_glyph_run_callback(ASS_Renderer *priv,
                                 void *user_data);
 
 /*
+ * Frame atlas packing (fork extension).
+ *
+ * ass_frame_pack_atlas() copies the alpha bitmaps of an ASS_Image list into
+ * one or more 8-bit texture pages and describes every bitmap with a fixed-size
+ * instance record, so a GPU consumer can draw a whole frame with one texture
+ * upload and one instanced draw call instead of one upload per image.
+ *
+ * LIBASS_HAS_FRAME_ATLAS is defined if ass_frame_pack_atlas() and
+ * ass_frame_atlas_reset() are available.
+ */
+#define LIBASS_HAS_FRAME_ATLAS 1
+
+/**
+ * \brief One textured quad of a packed frame.
+ *
+ * The struct is exactly 32 bytes: eight consecutive 32-bit fields without
+ * padding, so an array of them can be uploaded unchanged as a GPU vertex
+ * buffer with a stride of 32 bytes:
+ *   offset  0: dst_x, dst_y, w, h       (4 x int32)
+ *   offset 16: atlas_x, atlas_y, page   (3 x int32)
+ *   offset 28: color                    (uint32, same value as ASS_Image.color)
+ * As bytes, color is stored in host byte order, i.e. on little-endian hosts
+ * (including wasm32) the four bytes are A, B, G, R where A is the ASS
+ * transparency (0 = opaque). A normalized unsigned-byte attribute therefore
+ * yields vec4(A, B, G, R) / 255.
+ *
+ * The quad covers the video frame rectangle [dst_x, dst_x + w) x
+ * [dst_y, dst_y + h); texel (i, j) of the quad is stored at
+ * (atlas_x + i, atlas_y + j) of the given page. Blending is the same as for
+ * the ASS_Image the instance was created from.
+ */
+typedef struct ass_atlas_instance {
+    int32_t dst_x, dst_y;       // Placement inside the video frame
+    int32_t w, h;               // Size in pixels, both > 0
+    int32_t atlas_x, atlas_y;   // Top-left texel inside the page
+    int32_t page;               // Page index, 0 <= page < ASS_Atlas.n_pages
+    uint32_t color;             // Color and alpha, RGBA, as in ASS_Image
+} ASS_AtlasInstance;
+
+/**
+ * \brief A packed frame, see ass_frame_pack_atlas().
+ *
+ * All pages have the same size and are stored back to back without gaps:
+ * page i starts at buffer + i * width * height, and rows are tightly packed
+ * (row stride == width bytes, no alignment padding; width is a multiple of 4
+ * whenever max_size is, so the default unpack alignment of 4 also works
+ * then). The buffer starts on a 64-byte boundary. The whole buffer is one
+ * width x height x n_pages R8 volume, so it can be uploaded to a 2D array
+ * texture in a single call (e.g. WebGL2 texSubImage3D with UNPACK_ALIGNMENT 1,
+ * WebGPU writeTexture with bytesPerRow = width, rowsPerImage = height), or
+ * page by page to plain 2D textures. A consumer may use textures larger than
+ * width x height. Every byte of the buffer that is not covered by an instance
+ * is zero.
+ *
+ * pixels_changed and instances_changed allow skipping redundant GPU work:
+ * they are 0 only if the corresponding data is byte-for-byte identical to the
+ * result of the previous successful ass_frame_pack_atlas() call on the same
+ * renderer. They describe that previous libass result, not what the consumer
+ * actually uploaded: a consumer that skipped or lost an upload (frame not
+ * presented, texture reallocated, GPU context lost) must combine them with
+ * its own dirty state, or call ass_frame_atlas_reset() so that the next
+ * result reports both as 1.
+ */
+typedef struct ass_atlas {
+    const ASS_AtlasInstance *instances; // n_instances quads in blend order
+    int n_instances;
+    int n_pages;                // Number of pages, 0 if n_instances == 0
+    int width, height;          // Size of every page in pixels
+    const unsigned char *buffer; // n_pages * width * height bytes
+    int pixels_changed;         // 0 only if n_pages, width, height, buffer
+                                // and its contents are unchanged since the
+                                // previous successful call
+    int instances_changed;      // 0 only if n_instances and the contents of
+                                // instances are unchanged since the previous
+                                // successful call
+} ASS_Atlas;
+
+/**
+ * \brief Pack the bitmaps of an image list into a texture atlas.
+ *
+ * Instances are emitted in the order of the image list, which is the blend
+ * order. Images with w <= 0, h <= 0, a NULL bitmap or a fully transparent
+ * color (alpha byte 0xFF) produce no instance. Images larger than
+ * max_size - 2 * padding in either dimension are split into tiles that are
+ * emitted as consecutive instances; tiles never overlap, so compositing them
+ * in any order gives the same result as compositing the untiled image (but
+ * texture filtering across tile seams sees the padding, not the neighbor).
+ * Otherwise there is exactly one instance per image.
+ *
+ * Placement is deterministic: it depends only on the sequence of image
+ * (or tile) sizes, max_size and padding. Pages are filled with a shelf packer
+ * that places taller images first; a new page is started only when a page
+ * would exceed max_size x max_size. The page count is limited by max_pages;
+ * a frame that does not fit fails cheaply, before the pixel buffer is
+ * allocated. Small max_size values combined with large padding can need very
+ * many pages, since every tile carries its own padding.
+ *
+ * When images is the list most recently returned by ass_render_frame() on
+ * this renderer, or the frame of this renderer packed by the previous call,
+ * and its bitmaps are the same as those of the previous call (only positions
+ * or colors changed; this covers every frame for which ass_render_frame
+ * reports detect_change < 2, and also color-only changes, which it reports as
+ * 2), max_size and padding are the same, and the previous call succeeded on a
+ * frame of this renderer that still fits in max_pages pages, the pixel buffer
+ * is reused without copying and pixels_changed is 0. This detection is
+ * automatic and does not rely on any caller-supplied hint. Images that
+ * ass_render_frame() creates with their own bitmap on every frame (vector
+ * clips, BorderStyle=4 boxes) never match, so frames containing them always
+ * report pixels_changed = 1. To make it exact, the renderer keeps a reference
+ * to the last packed frame's image list (and therefore its bitmaps) until the
+ * next call, ass_frame_atlas_reset() or ass_renderer_done(); a call that
+ * fails on that same list keeps the reference, so the list can still be drawn
+ * directly. Bitmaps of frames returned by ass_render_frame() must be treated
+ * as read-only, since reuse compares them by address only. Any other list,
+ * including older frames of this renderer, is packed from scratch and not
+ * referenced; its bitmaps must not be modified while it is being packed.
+ *
+ * Memory: all buffers are owned by the renderer and only grow, so packing a
+ * frame of a size seen before allocates nothing. They are released by
+ * ass_frame_atlas_reset() and ass_renderer_done(); a consumer that packed an
+ * unusually large frame may call ass_frame_atlas_reset() to give the memory
+ * back.
+ *
+ * \param priv renderer handle
+ * \param images image list, e.g. as returned by ass_render_frame(); NULL is
+ * an empty frame. Each bitmap must satisfy the ASS_Image contract and have
+ * stride >= w.
+ * \param max_size maximum page width and height in pixels, normally the
+ * GPU's maximum texture size; values above 32768 are treated as 32768.
+ * Must be greater than 2 * padding.
+ * \param padding number of zero texels kept between neighbouring images and
+ * at the page borders, 0 to 64. Use 0 with texelFetch-style unfiltered
+ * access; use 1 or more if the consumer samples with filtering.
+ * \param max_pages maximum number of pages, at least 1, normally the GPU's
+ * maximum array texture layer count (e.g. WebGL2 MAX_ARRAY_TEXTURE_LAYERS,
+ * WebGPU maxTextureArrayLayers). INT_MAX means no limit; only pass it if
+ * max_size and padding are large enough to keep the page count reasonable,
+ * since the page limit is also what bounds the buffer size.
+ * \return the packed frame, or NULL on error (invalid arguments, an image
+ * with stride < w, more than max_pages pages needed, size overflow or
+ * allocation failure). On NULL the consumer can fall back to drawing the
+ * image list directly, or retry with a larger max_size. The result and
+ * everything it points to is owned by the renderer and stays valid until the
+ * next ass_frame_pack_atlas() call, ass_frame_atlas_reset() or
+ * ass_renderer_done(), whichever comes first; in particular it stays valid
+ * across ass_render_frame(). After an error the previous result is invalid
+ * too, and the next successful call reports pixels_changed =
+ * instances_changed = 1.
+ */
+const ASS_Atlas *ass_frame_pack_atlas(ASS_Renderer *priv, ASS_Image *images,
+                                      int max_size, int padding,
+                                      int max_pages);
+
+/**
+ * \brief Drop the atlas state of a renderer.
+ * Releases all memory used by ass_frame_pack_atlas() and the reference to
+ * the last packed frame. The previous result becomes invalid, and the next
+ * ass_frame_pack_atlas() call packs from scratch and reports
+ * pixels_changed = instances_changed = 1. Use it when the consumer lost its
+ * GPU copy of the atlas or wants to release memory. Does nothing if the
+ * renderer has no atlas state.
+ * \param priv renderer handle
+ */
+void ass_frame_atlas_reset(ASS_Renderer *priv);
+
+/*
  * The following functions operate on track objects and do not need
  * an ass_renderer
  */
