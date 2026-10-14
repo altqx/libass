@@ -516,20 +516,29 @@ void ass_cache_cut(Cache *cache, size_t max_size)
 
 void ass_cache_empty(Cache *cache)
 {
-    for (int i = 0; i < cache->buckets; i++) {
+    // Destructors may release other items of the same cache
+    // (e.g. outline border -> glyph outline), so first detach all items
+    // while holding a reference to each (queued items already hold one),
+    // and only then drop those references.
+    CacheItem *list = NULL;
+    for (unsigned i = 0; i < cache->buckets; i++) {
         CacheItem *item = cache->map[i];
         while (item) {
             assert(item->size);
             CacheItem *next = item->next;
-            if (item->queue_prev)
-                item->ref_count--;
-            if (item->ref_count)
-                item->cache = NULL;
-            else
-                destroy_item(cache->desc, item);
+            if (!item->queue_prev)
+                item->ref_count++;
+            item->cache = NULL;
+            item->next = list;
+            list = item;
             item = next;
         }
         cache->map[i] = NULL;
+    }
+    while (list) {
+        CacheItem *next = list->next;
+        ass_cache_dec_ref((char *) list + CACHE_ITEM_SIZE);
+        list = next;
     }
 
     cache->queue_first = NULL;
