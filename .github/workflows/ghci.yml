@@ -261,10 +261,12 @@ jobs:
       - name: check libass.sym against ass.h and the shared library
         if: startsWith(matrix.os, 'ubuntu-')
         run: |
-          if [ -f libass/.libs/libass.so ] ; then
+          # tcc ignores the version script libtool generates from libass.sym,
+          # so its shared library exports everything
+          if [ -f libass/.libs/libass.so ] && [ "${{ matrix.cc }}" != tcc ] ; then
             CC="${{ matrix.cc }}" .github/scripts/check-exports.sh libass/.libs/libass.so
           else
-            echo "No shared library was built; checking ass.h only."
+            echo "Checking ass.h only."
             CC="${{ matrix.cc }}" .github/scripts/check-exports.sh
           fi
 
