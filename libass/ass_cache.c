@@ -336,7 +336,8 @@ typedef struct cache_item {
 } CacheItem;
 
 struct cache {
-    unsigned buckets;
+    size_t bucket_mask;  // bucket count is a power of two
+    size_t items;
     CacheItem **map;
     CacheItem *queue_first, **queue_last;
 
@@ -344,6 +345,8 @@ struct cache {
 
     size_t cache_size;
 };
+
+#define CACHE_INITIAL_BUCKETS 256
 
 #define CACHE_ALIGN 8
 #define CACHE_ITEM_SIZE ((sizeof(CacheItem) + (CACHE_ALIGN - 1)) & ~(CACHE_ALIGN - 1))
@@ -365,16 +368,53 @@ Cache *ass_cache_create(const CacheDesc *desc)
     Cache *cache = calloc(1, sizeof(*cache));
     if (!cache)
         return NULL;
-    cache->buckets = 0xFFFF;
+    cache->bucket_mask = CACHE_INITIAL_BUCKETS - 1;
     cache->queue_last = &cache->queue_first;
     cache->desc = desc;
-    cache->map = calloc(cache->buckets, sizeof(CacheItem *));
+    cache->map = calloc(CACHE_INITIAL_BUCKETS, sizeof(CacheItem *));
     if (!cache->map) {
         free(cache);
         return NULL;
     }
 
     return cache;
+}
+
+static inline void link_item(CacheItem **bucketptr, CacheItem *item)
+{
+    if (*bucketptr)
+        (*bucketptr)->prev = &item->next;
+    item->prev = bucketptr;
+    item->next = *bucketptr;
+    *bucketptr = item;
+}
+
+// Double the bucket count, keeping the current map on allocation failure.
+// Items stay in place; their keys are rehashed to find the new buckets.
+static void grow_map(Cache *cache)
+{
+    const CacheDesc *desc = cache->desc;
+    size_t key_offs = CACHE_ITEM_SIZE + align_cache(desc->value_size);
+    size_t buckets = cache->bucket_mask + 1;
+    if (buckets > SIZE_MAX / (2 * sizeof(CacheItem *)))
+        return;
+    CacheItem **map = calloc(2 * buckets, sizeof(CacheItem *));
+    if (!map)
+        return;
+
+    size_t mask = 2 * buckets - 1;
+    for (size_t i = 0; i < buckets; i++) {
+        CacheItem *item = cache->map[i];
+        while (item) {
+            CacheItem *next = item->next;
+            ass_hashcode hash = desc->hash_func((char *) item + key_offs, ASS_HASH_INIT);
+            link_item(&map[hash & mask], item);
+            item = next;
+        }
+    }
+    free(cache->map);
+    cache->map = map;
+    cache->bucket_mask = mask;
 }
 
 // Retrieve a value corresponding to a particular cache key,
@@ -385,8 +425,8 @@ void *ass_cache_get(Cache *cache, void *key, void *priv)
 {
     const CacheDesc *desc = cache->desc;
     size_t key_offs = CACHE_ITEM_SIZE + align_cache(desc->value_size);
-    unsigned bucket = desc->hash_func(key, ASS_HASH_INIT) % cache->buckets;
-    CacheItem *item = cache->map[bucket];
+    ass_hashcode hash = desc->hash_func(key, ASS_HASH_INIT);
+    CacheItem *item = cache->map[hash & cache->bucket_mask];
     while (item) {
         if (desc->compare_func(key, (char *) item + key_offs)) {
             assert(item->size);
@@ -424,12 +464,10 @@ void *ass_cache_get(Cache *cache, void *key, void *priv)
     item->size = desc->construct_func(new_key, value, priv);
     assert(item->size);
 
-    CacheItem **bucketptr = &cache->map[bucket];
-    if (*bucketptr)
-        (*bucketptr)->prev = &item->next;
-    item->prev = bucketptr;
-    item->next = *bucketptr;
-    *bucketptr = item;
+    if (cache->items > cache->bucket_mask)
+        grow_map(cache);
+    link_item(&cache->map[hash & cache->bucket_mask], item);
+    cache->items++;
 
     *cache->queue_last = item;
     item->queue_prev = cache->queue_last;
@@ -479,6 +517,7 @@ void ass_cache_dec_ref(void *value)
             item->next->prev = item->prev;
         *item->prev = item->next;
 
+        cache->items--;
         cache->cache_size -= item->size + (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
     }
     destroy_item(item->desc, item);
@@ -505,6 +544,7 @@ void ass_cache_cut(Cache *cache, size_t max_size)
             item->next->prev = item->prev;
         *item->prev = item->next;
 
+        cache->items--;
         cache->cache_size -= item->size + (item->size == 1 ? 0 : CACHE_ITEM_SIZE);
         destroy_item(cache->desc, item);
     } while (cache->cache_size > max_size);
@@ -516,12 +556,15 @@ void ass_cache_cut(Cache *cache, size_t max_size)
 
 void ass_cache_empty(Cache *cache)
 {
+    if (!cache->items)
+        return;
+
     // Destructors may release other items of the same cache
     // (e.g. outline border -> glyph outline), so first detach all items
     // while holding a reference to each (queued items already hold one),
     // and only then drop those references.
     CacheItem *list = NULL;
-    for (unsigned i = 0; i < cache->buckets; i++) {
+    for (size_t i = 0; i <= cache->bucket_mask; i++) {
         CacheItem *item = cache->map[i];
         while (item) {
             assert(item->size);
@@ -543,6 +586,7 @@ void ass_cache_empty(Cache *cache)
 
     cache->queue_first = NULL;
     cache->queue_last = &cache->queue_first;
+    cache->items = 0;
     cache->cache_size = 0;
 }
 
