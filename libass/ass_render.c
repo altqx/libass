@@ -35,6 +35,23 @@
 #include "ass_priv.h"
 #include "ass_shaper.h"
 
+// Pooled image nodes are poisoned in ASan builds,
+// so stale ASS_Image pointers are still caught there.
+#if defined(__SANITIZE_ADDRESS__)
+#define ASS_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define ASS_ASAN 1
+#endif
+#endif
+
+#ifdef ASS_ASAN
+#include <sanitizer/asan_interface.h>
+#else
+#define ASAN_POISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
+#define ASAN_UNPOISON_MEMORY_REGION(addr, size) ((void) (addr), (void) (size))
+#endif
+
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
 #define MAX_BITMAPS_INITIAL 16
@@ -180,8 +197,15 @@ void ass_renderer_done(ASS_Renderer *render_priv)
     if (!render_priv)
         return;
 
-    ass_frame_unref(render_priv->images_root);
-    ass_frame_unref(render_priv->prev_images_root);
+    ass_frame_unref(render_priv, render_priv->images_root);
+    ass_frame_unref(render_priv, render_priv->prev_images_root);
+    ASS_ImagePriv *pooled = render_priv->image_pool;
+    while (pooled) {
+        ASAN_UNPOISON_MEMORY_REGION(pooled, sizeof(*pooled));
+        ASS_ImagePriv *next = (ASS_ImagePriv *) pooled->result.next;
+        free(pooled);
+        pooled = next;
+    }
 
     ass_cache_done(render_priv->cache.composite_cache);
     ass_cache_done(render_priv->cache.bitmap_cache);
@@ -211,12 +235,18 @@ void ass_renderer_done(ASS_Renderer *render_priv)
  * \brief Create a new ASS_Image
  * Parameters are the same as ASS_Image fields.
  */
-static ASS_Image *my_draw_bitmap(unsigned char *bitmap, int bitmap_w,
+static ASS_Image *my_draw_bitmap(ASS_Renderer *render_priv,
+                                 unsigned char *bitmap, int bitmap_w,
                                  int bitmap_h, int stride, int dst_x,
                                  int dst_y, uint32_t color,
                                  CompositeHashValue *source)
 {
-    ASS_ImagePriv *img = malloc(sizeof(ASS_ImagePriv));
+    ASS_ImagePriv *img = render_priv->image_pool;
+    if (img) {
+        ASAN_UNPOISON_MEMORY_REGION(img, sizeof(*img));
+        render_priv->image_pool = (ASS_ImagePriv *) img->result.next;
+    } else
+        img = malloc(sizeof(ASS_ImagePriv));
     if (!img) {
         if (!source)
             ass_aligned_free(bitmap);
@@ -230,6 +260,7 @@ static ASS_Image *my_draw_bitmap(unsigned char *bitmap, int bitmap_w,
     img->result.color = color;
     img->result.dst_x = dst_x;
     img->result.dst_y = dst_y;
+    img->result.next = NULL;
 
     img->source = source;
     ass_cache_inc_ref(source);
@@ -390,7 +421,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
         // split up into left and right for karaoke, if needed
         if (lbrk > r[j].x0) {
             if (lbrk > r[j].x1) lbrk = r[j].x1;
-            img = my_draw_bitmap(bm->buffer + r[j].y0 * bm->stride + r[j].x0,
+            img = my_draw_bitmap(render_priv, bm->buffer + r[j].y0 * bm->stride + r[j].x0,
                                  lbrk - r[j].x0, r[j].y1 - r[j].y0, bm->stride,
                                  dst_x + r[j].x0, dst_y + r[j].y0, color, source);
             if (!img) break;
@@ -400,7 +431,7 @@ static ASS_Image **render_glyph_i(RenderContext *state,
         }
         if (lbrk < r[j].x1) {
             if (lbrk < r[j].x0) lbrk = r[j].x0;
-            img = my_draw_bitmap(bm->buffer + r[j].y0 * bm->stride + lbrk,
+            img = my_draw_bitmap(render_priv, bm->buffer + r[j].y0 * bm->stride + lbrk,
                                  r[j].x1 - lbrk, r[j].y1 - r[j].y0, bm->stride,
                                  dst_x + lbrk, dst_y + r[j].y0, color2, source);
             if (!img) break;
@@ -477,7 +508,7 @@ render_glyph(RenderContext *state, Bitmap *bm, int dst_x, int dst_y,
     if (brk > b_x0) {           // draw left part
         if (brk > b_x1)
             brk = b_x1;
-        img = my_draw_bitmap(bm->buffer + bm->stride * b_y0 + b_x0,
+        img = my_draw_bitmap(render_priv, bm->buffer + bm->stride * b_y0 + b_x0,
                              brk - b_x0, b_y1 - b_y0, bm->stride,
                              dst_x + b_x0, dst_y + b_y0, color, source);
         if (!img) return tail;
@@ -488,7 +519,7 @@ render_glyph(RenderContext *state, Bitmap *bm, int dst_x, int dst_y,
     if (brk < b_x1) {           // draw right part
         if (brk < b_x0)
             brk = b_x0;
-        img = my_draw_bitmap(bm->buffer + bm->stride * b_y0 + brk,
+        img = my_draw_bitmap(render_priv, bm->buffer + bm->stride * b_y0 + brk,
                              b_x1 - brk, b_y1 - b_y0, bm->stride,
                              dst_x + brk, dst_y + b_y0, color2, source);
         if (!img) return tail;
@@ -2790,7 +2821,7 @@ static void add_background(RenderContext *state, EventImages *event_images)
     memset(nbuffer, 0xFF, w * h);
     uint32_t clr = state->c[3];
     ass_apply_fade(&clr, state->fade);
-    ASS_Image *img = my_draw_bitmap(nbuffer, w, h, w, left, top,
+    ASS_Image *img = my_draw_bitmap(render_priv, nbuffer, w, h, w, left, top,
                                     clr, NULL);
     if (img) {
         img->type = IMAGE_TYPE_SHADOW;
@@ -3412,20 +3443,24 @@ static int ass_detect_change(ASS_Renderer *priv)
 }
 
 /**
- * \brief free a single image.
+ * \brief release a single image.
+ * \param render_priv renderer whose pool receives the freed node
  * \param img image as returned by ass_render_frame().
- *        Only img will be freed, not img->next.
+ *        Drops img's bitmap and cache reference and returns the node
+ *        to the renderer's pool. The rest of the list is not released.
  * \return img->next
  * Should not be called outside of ass_frame_unref
  * once the image list's refcounting is set up.
  */
-static ASS_Image *ass_free_image(ASS_Image *img) {
+static ASS_Image *ass_free_image(ASS_Renderer *render_priv, ASS_Image *img) {
     ASS_Image *next = img->next;
 
     ASS_ImagePriv *priv = (ASS_ImagePriv *) img;
     ass_cache_dec_ref(priv->source);
     ass_aligned_free(priv->buffer);
-    free(priv);
+    priv->result.next = (ASS_Image *) render_priv->image_pool;
+    render_priv->image_pool = priv;
+    ASAN_POISON_MEMORY_REGION(priv, sizeof(*priv));
 
     return next;
 }
@@ -3486,7 +3521,7 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         ASS_Image *cur = priv->eimg[i].imgs;
         while (cur) {
             if (_a(cur->color) == 0xFF) {
-                cur = ass_free_image(cur);
+                cur = ass_free_image(priv, cur);
                 continue;
             }
 
@@ -3505,7 +3540,7 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         *detect_change = ass_detect_change(priv);
 
     // free the previous image list
-    ass_frame_unref(priv->prev_images_root);
+    ass_frame_unref(priv, priv->prev_images_root);
     priv->prev_images_root = NULL;
 
     if (track->parser_priv->prune_delay >= 0)
@@ -3527,13 +3562,14 @@ void ass_frame_ref(ASS_Image *img)
 
 /**
  * \brief Release reference to a frame image list.
- * \param image_list image list returned by ass_render_frame()
+ * \param priv renderer that produced the list; freed nodes return to its pool
+ * \param img image list returned by ass_render_frame()
  */
-void ass_frame_unref(ASS_Image *img)
+void ass_frame_unref(ASS_Renderer *priv, ASS_Image *img)
 {
     if (!img || --((ASS_ImagePriv *) img)->ref_count)
         return;
     do {
-        img = ass_free_image(img);
+        img = ass_free_image(priv, img);
     } while (img);
 }

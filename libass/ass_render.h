@@ -335,6 +335,9 @@ struct ass_renderer {
     int eimg_size;              // allocated buffer size
     Rect *collision_scratch;    // temporary buffer for collision placement
     int collision_scratch_size; // allocated buffer size
+    ASS_ImagePriv *image_pool;  // released image nodes, linked via result.next;
+                                // grow-only: holds at most the peak number of
+                                // live images, freed in ass_renderer_done
 
     // frame-global data
     int width, height;          // screen dimensions (the whole frame from ass_set_frame_size)
@@ -364,7 +367,7 @@ typedef struct render_priv {
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);
 void ass_frame_ref(ASS_Image *img);
-void ass_frame_unref(ASS_Image *img);
+void ass_frame_unref(ASS_Renderer *priv, ASS_Image *img);
 ASS_Vector ass_layout_res(ASS_Renderer *render_priv);
 
 // XXX: this is actually in ass.c, includes should be fixed later on
