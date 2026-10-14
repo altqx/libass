@@ -139,6 +139,13 @@ jobs:
                 git nasm ca_root_nss \
                 autoconf automake libtool pkgconf \
                 freetype2 fribidi harfbuzz fontconfig png
+              # freetype2.pc lists bzip2 in Requires.private, but libbz2
+              # comes with the base system, which installs no bzip2.pc
+              if ! pkg-config --exists bzip2 ; then
+                printf '%s\n' 'Name: bzip2' 'Description: bzip2 (base system)' \
+                  'Version: 1.0.8' 'Libs: -lbz2' 'Cflags:' \
+                  | sudo tee /usr/local/libdata/pkgconfig/bzip2.pc > /dev/null
+              fi
               ;;
             openbsd)
               # while OpenBSD natively uses doas,
