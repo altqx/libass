@@ -536,8 +536,11 @@ char *ass_parse_tags(RenderContext *state, char *p, char *end, double pwr,
             }
         }
 
-#define tag(name) (mystrcmp(&p, (name)) && (push_arg(args, &nargs, p, name_end), 1))
-#define complex_tag(name) mystrcmp(&p, (name))
+// Compare the first character inline to skip most mystrcmp() calls.
+// This does not change which tag matches.
+#define tag(name) (*p == (name)[0] && mystrcmp(&p, (name)) && \
+                   (push_arg(args, &nargs, p, name_end), 1))
+#define complex_tag(name) (*p == (name)[0] && mystrcmp(&p, (name)))
 
         // New tags introduced in vsfilter 2.39
         if (tag("xbord")) {
