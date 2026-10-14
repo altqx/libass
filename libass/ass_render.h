@@ -369,6 +369,7 @@ struct ass_renderer {
 typedef struct render_priv {
     int top, height, left, width;
     int render_id;
+    unsigned layout_epoch;
 } RenderPriv;
 
 void ass_reset_render_context(RenderContext *state, ASS_Style *style);

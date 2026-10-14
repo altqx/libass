@@ -21,3 +21,15 @@ if art_samples != ''
     dir = join_paths(art_samples, 'crash')
     test('art-fuzz', files(join_paths(dir, 'run-all.sh'))[0], workdir: dir, args: [libass_fuzz], depends: [libass_fuzz])
 endif
+
+libass_fuzz_splice = executable(
+    'fuzz_splice',
+    files('fuzz_splice.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_args: get_option('fuzz-link-args'),
+    link_language: get_option('fuzz-link-language'),
+    link_with: libass_for_tools,
+)
+test('fuzz-splice', libass_fuzz_splice, args: [files('splice.seed')])

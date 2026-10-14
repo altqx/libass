@@ -1395,6 +1395,150 @@ void ass_track_events_modified(ASS_Track *track, int first_eid)
         parser_priv->event_blocks_valid = FFMAX(first_eid, 0);
 }
 
+void ass_track_reset_layout_state(ASS_Track *track)
+{
+    if (track && track->parser_priv)
+        track->parser_priv->layout_epoch++;
+}
+
+/**
+ * \brief Parse one line of ass_track_splice_events input.
+ * Does what process_line and process_events_line do with a "Dialogue:" line
+ * in the [Events] section. Every other line, including Format lines and
+ * section headers, yields no event and leaves the track unchanged.
+ * \param str zero-terminated line, modified in place
+ * \param event filled in if the line yields an event
+ * \return 1 if event was filled in, 0 if the line yields no event,
+ *         -1 on allocation failure
+ */
+static int parse_splice_line(ASS_Track *track, char *str, ASS_Event *event)
+{
+    skip_spaces(&str);
+    if (strncmp(str, "Dialogue:", 9))
+        return 0;
+    str += 9;
+    skip_spaces(&str);
+
+    memset(event, 0, sizeof(*event));
+    int ret = process_event_tail(track, event, str, 0);
+    if (!ret)
+        return 1;
+    free(event->Name);
+    free(event->Effect);
+    free(event->Text);
+    return ret < 0 ? -1 : 0;
+}
+
+int ass_track_splice_events(ASS_Track *track, int first_eid, int n_remove,
+                            const char *lines, size_t len)
+{
+    if (!track || !track->parser_priv || !track->event_format ||
+            first_eid < 0 || n_remove < 0 || first_eid > track->n_events ||
+            n_remove > track->n_events - first_eid ||
+            (!lines && len) || len == SIZE_MAX)
+        return -1;
+
+    char *buf = malloc(len + 1);
+    if (!buf)
+        return -1;
+    if (len)
+        memcpy(buf, lines, len);
+    buf[len] = '\0';
+
+    // parse into a separate array first, so that failures leave the track as is
+    ASS_Event *added = NULL;
+    int n_added = 0, max_added = 0;
+    char *p = buf;
+    while (1) {
+        // split lines exactly as process_text does
+        char *q;
+        while (1) {
+            if ((*p == '\r') || (*p == '\n'))
+                ++p;
+            else if (p[0] == '\xef' && p[1] == '\xbb' && p[2] == '\xbf')
+                p += 3;         // U+FFFE (BOM)
+            else
+                break;
+        }
+        for (q = p; ((*q != '\0') && (*q != '\r') && (*q != '\n')); ++q) {
+        };
+        if (q == p)
+            break;
+        if (*q != '\0')
+            *(q++) = '\0';
+
+        if (n_added == max_added) {
+            if (max_added >= INT_MAX / 4)
+                goto fail;
+            int new_max = max_added * 2 + 8;
+            if (!ASS_REALLOC_ARRAY(added, new_max))
+                goto fail;
+            max_added = new_max;
+        }
+        int ret = parse_splice_line(track, p, added + n_added);
+        if (ret < 0)
+            goto fail;
+        n_added += ret;
+
+        if (*q == '\0')
+            break;
+        p = q;
+    }
+
+    int n_kept = track->n_events - n_remove;
+    if (n_added > INT_MAX / 2 - n_kept)
+        goto fail;
+    int new_n = n_kept + n_added;
+    if (new_n > track->max_events) {
+        int new_max = FFMIN(FFMAX(new_n, track->max_events * 2 + 1), INT_MAX / 2);
+        if (!ASS_REALLOC_ARRAY(track->events, new_max))
+            goto fail;
+        track->max_events = new_max;
+    }
+
+    // ass_free_event also marks the event index from first_eid on as changed
+    for (int i = first_eid; i < first_eid + n_remove; i++)
+        ass_free_event(track, i);
+    int n_tail = track->n_events - first_eid - n_remove;
+    if (n_added != n_remove)
+        memmove(track->events + first_eid + n_added,
+                track->events + first_eid + n_remove,
+                (size_t) n_tail * sizeof(*track->events));
+    if (n_added)
+        memcpy(track->events + first_eid, added,
+               (size_t) n_added * sizeof(*track->events));
+    track->n_events = new_n;
+
+    // number events like parse_memory: external subs have no ReadOrder field;
+    // later events keep theirs unless their ids moved
+    int renumber_end = n_added != n_remove ? new_n : first_eid + n_added;
+    for (int i = first_eid; i < renumber_end; i++)
+        track->events[i].ReadOrder = i;
+    for (int i = first_eid; i < first_eid + n_added; i++)
+        update_prune_ts(track, track->events[i].Start + track->events[i].Duration);
+    // the duplicate check bitmap no longer matches; ass_process_chunk rebuilds it
+    free(track->parser_priv->read_order_bitmap);
+    track->parser_priv->read_order_bitmap = NULL;
+    track->parser_priv->read_order_elems = 0;
+
+    ass_track_events_modified(track, first_eid);
+    ass_track_reset_layout_state(track);
+
+    free(added);
+    free(buf);
+    return n_added;
+
+fail:
+    for (int i = 0; i < n_added; i++) {
+        free(added[i].Name);
+        free(added[i].Effect);
+        free(added[i].Text);
+    }
+    free(added);
+    free(buf);
+    return -1;
+}
+
 void ass_configure_prune(ASS_Track *track, long long delay)
 {
     track->parser_priv->prune_delay = delay;

@@ -24,7 +24,7 @@
 #include <stdarg.h>
 #include "ass_types.h"
 
-#define LIBASS_VERSION 0x01705020
+#define LIBASS_VERSION 0x01705030
 
 #ifdef __cplusplus
 extern "C" {
@@ -1085,6 +1085,64 @@ void ass_flush_events(ASS_Track *track);
  */
 #define LIBASS_HAS_TRACK_EVENTS_MODIFIED 1
 void ass_track_events_modified(ASS_Track *track, int first_eid);
+
+/**
+ * \brief Replace a range of events with events parsed from script lines.
+ * \param track track
+ * \param first_eid id of the first event to replace (0 <= first_eid <= n_events)
+ * \param n_remove number of events to remove from first_eid on
+ *        (0 <= n_remove <= n_events - first_eid)
+ * \param lines zero or more lines separated by \n or \r\n (or \r), in the
+ *        same encoding (UTF-8) as the rest of the track; may be NULL if len is 0
+ * \param len length of lines in bytes; parsing stops at a NUL byte
+ * \return number of events inserted at first_eid (>= 0), or -1 if an argument
+ *         is invalid, the track has no event format, or memory could not be
+ *         allocated; the track is unchanged on failure
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_TRACK_SPLICE_EVENTS.
+ *
+ * Every "Dialogue:" line is parsed with the track's current event format
+ * exactly as ass_read_memory parses it in the [Events] section (style lookup
+ * by name, End and Actor aliases, time values, trimming of trailing white
+ * space from Text). All other lines, including "Comment:", "Format:" and
+ * section headers, yield no event and do not change the track; malformed
+ * Dialogue lines that ass_read_memory drops are dropped here too. Callers
+ * that need one event per line should compare the return value with the
+ * number of Dialogue lines they passed and fall back to a full parse if
+ * they differ.
+ *
+ * ReadOrder of the inserted events, and of all later events if their ids
+ * moved, is set to their event id, as ass_read_memory numbers events.
+ * This function then does what
+ * ass_track_events_modified(track, first_eid) and
+ * ass_track_reset_layout_state(track) do, so the next ass_render_frame call
+ * renders the track exactly as it would render a track freshly parsed by
+ * ass_read_memory from the edited script, as long as only Dialogue and
+ * Comment lines in [Events] changed and the event Format line did not.
+ *
+ * Meant for tracks read with ass_read_memory or ass_read_file. Must not be
+ * called while another thread renders the track.
+ */
+#define LIBASS_HAS_TRACK_SPLICE_EVENTS 1
+int ass_track_splice_events(ASS_Track *track, int first_eid, int n_remove,
+                            const char *lines, size_t len);
+
+/**
+ * \brief Forget the collision placement history of all events of a track.
+ * \param track track
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_TRACK_SPLICE_EVENTS.
+ *
+ * ass_render_frame remembers where it placed each event to avoid collisions
+ * and keeps that position while the event stays on screen. After this call
+ * the next frame places events as on a freshly parsed track. This takes
+ * constant time. ass_track_splice_events calls it itself; call it after
+ * changing events or styles in other ways if rendering should match a fresh
+ * parse of the edited script.
+ */
+void ass_track_reset_layout_state(ASS_Track *track);
 
 /**
  * \brief Read subtitles from file.

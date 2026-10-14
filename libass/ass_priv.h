@@ -75,6 +75,10 @@ struct parser_priv {
     long long *event_block_end;
     int event_block_cap;    // allocated size in blocks
     int event_blocks_valid; // summaries are current for events [0, valid)
+
+    // bumped by ass_track_reset_layout_state; event render_priv from an
+    // older epoch is treated as absent (no collision placement history)
+    unsigned layout_epoch;
 };
 
 #endif /* LIBASS_PRIV_H */

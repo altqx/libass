@@ -18,3 +18,13 @@ if art_samples != ''
     dir = join_paths(art_samples, 'regression')
     test('art-compare', files(join_paths(dir, 'run-all.sh'))[0], workdir: dir, args: [libass_compare], depends: [libass_compare])
 endif
+
+libass_fork_api = executable(
+    'fork_api',
+    files('fork_api.c'),
+    install: false,
+    include_directories: incs,
+    dependencies: deps,
+    link_with: libass_for_tools,
+)
+test('fork-api', libass_fork_api, args: [meson.project_source_root()], timeout: 600)

@@ -20,6 +20,14 @@ compare_compare_LDADD = libass/libass_internal.la
 compare_compare_LDFLAGS = $(AM_LDFLAGS) $(LIBPNG_LIBS) -static
 EXTRA_DIST += compare/README.md
 
+if ENABLE_COMPARE
+check_PROGRAMS += compare/fork_api
+TESTS += compare/fork_api$(EXEEXT)
+endif
+compare_fork_api_SOURCES = compare/fork_api.c
+compare_fork_api_LDADD = libass/libass.la
+compare_fork_api_LDFLAGS = $(AM_LDFLAGS) -static
+
 if ENABLE_FUZZ
 noinst_PROGRAMS += fuzz/fuzz
 endif
@@ -27,6 +35,15 @@ fuzz_fuzz_SOURCES = fuzz/fuzz.c fuzz/writeout.h fuzz/writeout.c
 fuzz_fuzz_CPPFLAGS = $(AM_CPPFLAGS) $(FUZZ_CPPFLAGS)
 fuzz_fuzz_LDADD = libass/libass.la
 fuzz_fuzz_LDFLAGS = $(AM_LDFLAGS) $(FUZZ_LDFLAGS) -static
+
+if ENABLE_FUZZ
+noinst_PROGRAMS += fuzz/fuzz_splice
+endif
+fuzz_fuzz_splice_SOURCES = fuzz/fuzz_splice.c
+fuzz_fuzz_splice_CPPFLAGS = $(AM_CPPFLAGS) $(FUZZ_CPPFLAGS)
+fuzz_fuzz_splice_LDADD = libass/libass.la
+fuzz_fuzz_splice_LDFLAGS = $(AM_LDFLAGS) $(FUZZ_LDFLAGS) -static
+EXTRA_DIST += fuzz/splice.seed
 
 if ENABLE_FUZZ
 fuzz/fuzz_ossfuzz: fuzz/fuzz-fuzz.o libass/libass.la $(srcdir)/libass.pc

@@ -3209,9 +3209,12 @@ static ASS_RenderPriv *get_render_priv(ASS_Renderer *render_priv,
         if (!event->render_priv)
             return NULL;
     }
-    if (render_priv->render_id != event->render_priv->render_id) {
+    unsigned layout_epoch = render_priv->track->parser_priv->layout_epoch;
+    if (render_priv->render_id != event->render_priv->render_id ||
+            layout_epoch != event->render_priv->layout_epoch) {
         memset(event->render_priv, 0, sizeof(ASS_RenderPriv));
         event->render_priv->render_id = render_priv->render_id;
+        event->render_priv->layout_epoch = layout_epoch;
     }
 
     return event->render_priv;
