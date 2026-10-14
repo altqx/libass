@@ -3,6 +3,7 @@ checkasm_src = files(
     'rasterizer.c',
     'blend_bitmaps.c',
     'be_blur.c',
+    'shift_bitmap.c',
     'blur.c',
 )
 

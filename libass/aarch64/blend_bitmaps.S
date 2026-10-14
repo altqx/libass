@@ -160,3 +160,48 @@ function mul_bitmaps_neon, export=1
     b.ne 0b
     ret
 endfunc
+
+/*
+ * void ass_fix_outline(uint8_t *dst, ptrdiff_t dst_stride,
+ *                      const uint8_t *src, ptrdiff_t src_stride,
+ *                      size_t width, size_t height);
+ */
+
+function fix_outline_neon, export=1
+    neg x6, x4
+    and x6, x6, 15
+    movrel x7, edge_mask
+    add x7, x7, x6
+    ld1 {v0.16b}, [x7]
+    add x6, x6, x4
+    sub x6, x6, 16
+    sub x1, x1, x6
+    sub x3, x3, x6
+0:
+    subs x6, x4, 16
+    b.ls 2f
+1:
+    ld1 {v1.16b}, [x0]
+    ld1 {v2.16b}, [x2], 16
+    cmhi v3.16b, v1.16b, v2.16b
+    ushr v2.16b, v2.16b, 1
+    sub v1.16b, v1.16b, v2.16b
+    and v1.16b, v1.16b, v3.16b
+    st1 {v1.16b}, [x0], 16
+    subs x6, x6, 16
+    b.hi 1b
+2:
+    ld1 {v1.16b}, [x0]
+    ld1 {v2.16b}, [x2]
+    and v2.16b, v2.16b, v0.16b
+    cmhi v3.16b, v1.16b, v2.16b
+    ushr v2.16b, v2.16b, 1
+    sub v1.16b, v1.16b, v2.16b
+    and v1.16b, v1.16b, v3.16b
+    st1 {v1.16b}, [x0]
+    subs x5, x5, 1
+    add x0, x0, x1
+    add x2, x2, x3
+    b.ne 0b
+    ret
+endfunc

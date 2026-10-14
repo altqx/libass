@@ -853,6 +853,9 @@ void ass_be_blur_wasm(uint8_t *restrict buf, ptrdiff_t stride,
     BitmapBlendFunc ass_add_bitmaps_  ## suffix; \
     BitmapBlendFunc ass_imul_bitmaps_ ## suffix; \
     BitmapMulFunc   ass_mul_bitmaps_  ## suffix; \
+    BitmapBlendFunc ass_fix_outline_  ## suffix; \
+    BitmapShiftFunc ass_shift_horz_   ## suffix; \
+    BitmapShiftFunc ass_shift_vert_   ## suffix; \
     BeBlurFunc      ass_be_blur_      ## suffix;
 
 #define GENERIC_FUNCTION(name, suffix) \
@@ -862,6 +865,9 @@ void ass_be_blur_wasm(uint8_t *restrict buf, ptrdiff_t stride,
     GENERIC_FUNCTION(add_bitmaps,  suffix) \
     GENERIC_FUNCTION(imul_bitmaps, suffix) \
     GENERIC_FUNCTION(mul_bitmaps,  suffix) \
+    GENERIC_FUNCTION(fix_outline,  suffix) \
+    GENERIC_FUNCTION(shift_horz,   suffix) \
+    GENERIC_FUNCTION(shift_vert,   suffix) \
     GENERIC_FUNCTION(be_blur,      suffix)
 
 

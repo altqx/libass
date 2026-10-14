@@ -60,6 +60,7 @@ static const struct {
     { "rasterizer", checkasm_check_rasterizer },
     { "blend_bitmaps", checkasm_check_blend_bitmaps },
     { "be_blur", checkasm_check_be_blur },
+    { "shift_bitmap", checkasm_check_shift_bitmap },
     { "blur", checkasm_check_blur },
     { 0 }
 };

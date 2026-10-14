@@ -17,6 +17,7 @@
  */
 
 #include "ass_compat.h"
+#include "ass_utils.h"
 
 #include "checkasm.h"
 
@@ -27,12 +28,14 @@
 #define MIN_WIDTH  1
 #define SRC1_STRIDE 96
 #define SRC2_STRIDE 128
+#define PADDING 32
 
-static void check_blend_bitmaps(BitmapBlendFunc func, const char *name)
+static void check_blend_bitmaps(BitmapBlendFunc func, const char *name, int align)
 {
-    ALIGN(uint8_t src[SRC1_STRIDE * HEIGHT], 32);
-    ALIGN(uint8_t dst_ref[DST_STRIDE * HEIGHT], 32);
-    ALIGN(uint8_t dst_new[DST_STRIDE * HEIGHT], 32);
+    // the kernels may access the last row up to a whole block past the width
+    ALIGN(uint8_t src[SRC1_STRIDE * HEIGHT + PADDING], 32);
+    ALIGN(uint8_t dst_ref[DST_STRIDE * HEIGHT + PADDING], 32);
+    ALIGN(uint8_t dst_new[DST_STRIDE * HEIGHT + PADDING], 32);
     declare_func(void,
                  uint8_t *dst, ptrdiff_t dst_stride,
                  const uint8_t *src, ptrdiff_t src_stride,
@@ -40,14 +43,20 @@ static void check_blend_bitmaps(BitmapBlendFunc func, const char *name)
 
     if (check_func(func, name)) {
         for (int w = MIN_WIDTH; w <= DST_STRIDE; w++) {
+            // callers pass a region inside a bitmap, so the pointers
+            // need not be aligned, but each row stays within the stride
+            int dst_offs = rnd() % FFMIN(align, DST_STRIDE - w + 1);
+            int src_offs = rnd() % align;
+            int h = 1 + rnd() % HEIGHT;
+
             for (int i = 0; i < sizeof(src); i++)
                 src[i] = rnd();
 
             for (int i = 0; i < sizeof(dst_ref); i++)
                 dst_ref[i] = dst_new[i] = rnd();
 
-            call_ref(dst_ref, DST_STRIDE, src, SRC1_STRIDE, w, HEIGHT);
-            call_new(dst_new, DST_STRIDE, src, SRC1_STRIDE, w, HEIGHT);
+            call_ref(dst_ref + dst_offs, DST_STRIDE, src + src_offs, SRC1_STRIDE, w, h);
+            call_new(dst_new + dst_offs, DST_STRIDE, src + src_offs, SRC1_STRIDE, w, h);
 
             if (memcmp(dst_ref, dst_new, sizeof(dst_ref))) {
                 fail();
@@ -102,7 +111,9 @@ static void check_mul_bitmaps(BitmapMulFunc func)
 void checkasm_check_blend_bitmaps(unsigned cpu_flag)
 {
     BitmapEngine engine = ass_bitmap_engine_init(cpu_flag);
-    check_blend_bitmaps(engine.add_bitmaps, "add_bitmaps");
-    check_blend_bitmaps(engine.imul_bitmaps, "imul_bitmaps");
+    int align = 1 << engine.align_order;
+    check_blend_bitmaps(engine.add_bitmaps, "add_bitmaps", align);
+    check_blend_bitmaps(engine.imul_bitmaps, "imul_bitmaps", align);
+    check_blend_bitmaps(engine.fix_outline, "fix_outline", align);
     check_mul_bitmaps(engine.mul_bitmaps);
 }

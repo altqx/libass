@@ -195,20 +195,13 @@ bool ass_outline_to_bitmap(RenderContext *state, Bitmap *bm,
     return true;
 }
 
-static void fix_outline_line(uint8_t *restrict o, const uint8_t *restrict g,
-                             int32_t width)
-{
-    for (int32_t x = 0; x < width; x++)
-        o[x] = (o[x] > g[x]) ? o[x] - (g[x] / 2) : 0;
-}
-
 /**
  * \brief fix outline bitmap
  *
  * The glyph bitmap is subtracted from outline bitmap. This way looks much
  * better in some cases.
  */
-void ass_fix_outline(Bitmap *bm_g, Bitmap *bm_o)
+void ass_fix_outline(const BitmapEngine *engine, Bitmap *bm_g, Bitmap *bm_o)
 {
     if (!bm_g->buffer || !bm_o->buffer)
         return;
@@ -217,79 +210,32 @@ void ass_fix_outline(Bitmap *bm_g, Bitmap *bm_o)
     int32_t t = FFMAX(bm_o->top,  bm_g->top);
     int32_t r = FFMIN(bm_o->left + bm_o->stride, bm_g->left + bm_g->stride);
     int32_t b = FFMIN(bm_o->top  + bm_o->h,      bm_g->top  + bm_g->h);
+    if (l >= r || t >= b)
+        return;
 
     const uint8_t *g = bm_g->buffer + (t - bm_g->top) * bm_g->stride + (l - bm_g->left);
     uint8_t *o = bm_o->buffer + (t - bm_o->top) * bm_o->stride + (l - bm_o->left);
 
-    // bm_g and bm_o never share a buffer
-    for (int32_t y = 0; y < b - t; y++) {
-        fix_outline_line(o, g, r - l);
-        g += bm_g->stride;
-        o += bm_o->stride;
-    }
-}
-
-/*
- * Shifting a row moves (pixel * shift >> 6) of every pixel but the last
- * one to its right neighbor, all amounts being taken from the original
- * pixels:
- *   out[x] = in[x] - (x < w - 1 ? in[x] * shift >> 6 : 0)
- *                  + (x > 0     ? in[x - 1] * shift >> 6 : 0)
- * Process the row right to left in blocks, so that every block only reads
- * pixels that are not modified yet, and every block can be vectorized.
- * Requires w > 1.
- */
-static void shift_line_x(uint8_t *row, int32_t w, int shift)
-{
-    uint8_t last = row[w - 1] + (uint8_t) (row[w - 2] * shift >> 6);
-    int32_t x = w - 2;
-    for (; x >= 16; x -= 16) {
-        uint8_t *ptr = row + x - 15, res[16];
-        for (int i = 0; i < 16; i++)
-            res[i] = ptr[i] + (uint8_t) (ptr[i - 1] * shift >> 6) -
-                (uint8_t) (ptr[i] * shift >> 6);
-        memcpy(ptr, res, sizeof(res));
-    }
-    for (; x > 0; x--)
-        row[x] += (uint8_t) (row[x - 1] * shift >> 6) -
-            (uint8_t) (row[x] * shift >> 6);
-    row[0] -= (uint8_t) (row[0] * shift >> 6);
-    row[w - 1] = last;
-}
-
-// Rows cannot overlap as stride >= w
-static void shift_line_y(uint8_t *restrict cur, uint8_t *restrict prev,
-                         int32_t w, int shift)
-{
-    for (int32_t x = 0; x < w; x++) {
-        uint8_t b = prev[x] * shift >> 6;
-        prev[x] -= b;
-        cur[x] += b;
-    }
+    engine->fix_outline(o, bm_o->stride, g, bm_g->stride, r - l, b - t);
 }
 
 /**
  * \brief Shift a bitmap by the fraction of a pixel in x and y direction
  * expressed in 26.6 fixed point
  */
-void ass_shift_bitmap(Bitmap *bm, int shift_x, int shift_y)
+void ass_shift_bitmap(const BitmapEngine *engine, Bitmap *bm,
+                      int shift_x, int shift_y)
 {
     assert((shift_x & ~63) == 0 && (shift_y & ~63) == 0);
 
-    if (!bm->buffer)
+    if (!bm->buffer || bm->w <= 0 || bm->h <= 0)
         return;
 
-    int32_t w = bm->w, h = bm->h;
-    ptrdiff_t s = bm->stride;
-    uint8_t *buf = bm->buffer;
-
     // Shift in x direction
-    if (shift_x && w > 1)
-        for (int32_t y = 0; y < h; y++)
-            shift_line_x(buf + y * s, w, shift_x);
+    if (shift_x && bm->w > 1)
+        engine->shift_horz(bm->buffer, bm->stride, bm->w, bm->h, shift_x);
 
     // Shift in y direction
-    if (shift_y)
-        for (int32_t y = h - 1; y > 0; y--)
-            shift_line_y(buf + y * s, buf + (y - 1) * s, w, shift_y);
+    if (shift_y && bm->h > 1)
+        engine->shift_vert(bm->buffer, bm->stride, bm->w, bm->h, shift_y);
 }

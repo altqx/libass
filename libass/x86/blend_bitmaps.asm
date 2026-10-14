@@ -273,3 +273,74 @@ INIT_XMM sse2
 MUL_BITMAPS
 INIT_YMM avx2
 MUL_BITMAPS
+
+;------------------------------------------------------------------------------
+; FIX_OUTLINE_BLOCK 1:m_res, 2:m_dst, 3:m_src, 4:m_zero, 5:m_7F
+; res = dst > src ? dst - src / 2 : 0, destroys dst and src
+;------------------------------------------------------------------------------
+
+%macro FIX_OUTLINE_BLOCK 5
+    psubusb m%1, m%2, m%3
+    pcmpeqb m%1, m%4
+    psrlw m%3, 1
+    pand m%3, m%5
+    psubb m%2, m%3
+    pandn m%1, m%2
+%endmacro
+
+;------------------------------------------------------------------------------
+; FIX_OUTLINE
+; void fix_outline(uint8_t *dst, ptrdiff_t dst_stride,
+;                  const uint8_t *src, ptrdiff_t src_stride,
+;                  size_t width, size_t height);
+;------------------------------------------------------------------------------
+
+%macro FIX_OUTLINE 0
+%if ARCH_X86_64
+cglobal fix_outline, 6,8,6
+    DECLARE_REG_TMP 7
+%else
+cglobal fix_outline, 5,7,6
+    DECLARE_REG_TMP 5
+%endif
+    lea r0, [r0 + r4]
+    lea r2, [r2 + r4]
+    neg r4
+    mov r6, r4
+    and r4, mmsize - 1
+    LOAD_EDGE_MASK 2, r4, t0
+    pxor m4, m4
+    pcmpeqb m5, m5
+    psrlw m5, 9
+    packuswb m5, m5
+%if !ARCH_X86_64
+    mov r5, r5m
+%endif
+    imul r5, r3
+    add r5, r2
+    mov r4, r6
+    jmp .loop_entry
+
+.width_loop:
+    FIX_OUTLINE_BLOCK 3, 0, 1, 4, 5
+    movu [r0 + r4 - mmsize], m3
+.loop_entry:
+    movu m0, [r0 + r4]
+    movu m1, [r2 + r4]
+    add r4, mmsize
+    jnc .width_loop
+    pand m1, m2
+    FIX_OUTLINE_BLOCK 3, 0, 1, 4, 5
+    movu [r0 + r4 - mmsize], m3
+    add r0, r1
+    add r2, r3
+    mov r4, r6
+    cmp r2, r5
+    jl .loop_entry
+    RET
+%endmacro
+
+INIT_XMM sse2
+FIX_OUTLINE
+INIT_YMM avx2
+FIX_OUTLINE
