@@ -3468,6 +3468,59 @@ static ASS_Image *ass_free_image(ASS_Renderer *render_priv, ASS_Image *img) {
     return next;
 }
 
+#define EVENT_BLOCK_SHIFT 6
+#define EVENT_BLOCK_SIZE (1 << EVENT_BLOCK_SHIFT)
+
+/**
+ * \brief Bring the per-block event timing summaries up to date.
+ * Only blocks at or after event_blocks_valid are recomputed, and nothing
+ * is written to the track if the summaries are already current.
+ * \return false if the summaries could not be allocated
+ */
+static bool update_event_blocks(ASS_Track *track)
+{
+    ASS_ParserPriv *parser_priv = track->parser_priv;
+    int n_events = track->n_events;
+    // keep block arithmetic and skipping in ass_render_frame within int
+    if (n_events > INT_MAX - EVENT_BLOCK_SIZE)
+        return false;
+    if (parser_priv->event_blocks_valid == n_events)
+        return true;
+    int n_blocks = (n_events + EVENT_BLOCK_SIZE - 1) >> EVENT_BLOCK_SHIFT;
+
+    if (n_blocks > parser_priv->event_block_cap) {
+        long long *start = ass_realloc_array(parser_priv->event_block_start,
+                                             n_blocks, sizeof(*start));
+        if (!start)
+            return false;
+        parser_priv->event_block_start = start;
+        long long *end = ass_realloc_array(parser_priv->event_block_end,
+                                           n_blocks, sizeof(*end));
+        if (!end)
+            return false;
+        parser_priv->event_block_end = end;
+        parser_priv->event_block_cap = n_blocks;
+    }
+
+    int valid = FFMIN(parser_priv->event_blocks_valid, n_events);
+    for (int b = valid >> EVENT_BLOCK_SHIFT; b < n_blocks; b++) {
+        int first = b << EVENT_BLOCK_SHIFT;
+        int last = FFMIN(first + EVENT_BLOCK_SIZE, n_events);
+        long long min_start = LLONG_MAX, max_end = LLONG_MIN;
+        for (int i = first; i < last; i++) {
+            ASS_Event *event = track->events + i;
+            // same expression as the activity check in ass_render_frame
+            long long end = event->Start + event->Duration;
+            min_start = FFMIN(min_start, event->Start);
+            max_end = FFMAX(max_end, end);
+        }
+        parser_priv->event_block_start[b] = min_start;
+        parser_priv->event_block_end[b] = max_end;
+    }
+    parser_priv->event_blocks_valid = n_events;
+    return true;
+}
+
 /**
  * \brief render a frame
  * \param priv library handle
@@ -3488,11 +3541,28 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
     }
 
     // render events separately
+    ASS_ParserPriv *parser_priv = track->parser_priv;
+    bool use_blocks = update_event_blocks(track);
     int cnt = 0;
     for (int i = 0; i < track->n_events; i++) {
+        // skip whole blocks without any event active at now
+        if (use_blocks && !(i & (EVENT_BLOCK_SIZE - 1))) {
+            int b = i >> EVENT_BLOCK_SHIFT;
+            int n_blocks =
+                (track->n_events + EVENT_BLOCK_SIZE - 1) >> EVENT_BLOCK_SHIFT;
+            while (b < n_blocks && (parser_priv->event_block_start[b] > now ||
+                                    parser_priv->event_block_end[b] <= now))
+                b++;
+            if (b == n_blocks)
+                break;
+            i = b << EVENT_BLOCK_SHIFT;
+        }
         ASS_Event *event = track->events + i;
+        // & instead of && lets compilers that keep it branchless (e.g. gcc)
+        // take a single, rarely taken branch: Start <= now on its own is
+        // unpredictable for events that are not in time order
         if ((event->Start <= now)
-            && (now < (event->Start + event->Duration))) {
+            & (now < (event->Start + event->Duration))) {
             if (cnt >= priv->eimg_size) {
                 EventImages *eimg = ass_realloc_array(priv->eimg,
                                                       priv->eimg_size + 100,

@@ -53,7 +53,8 @@
  *    - Before manual changes are performed, it is allowed to call any such API,
  *      unless the documentation of the function says otherwise.
  *    - After manual changes have been performed, no track-modifying API may be
- *      invoked, except for ass_track_set_feature and ass_flush_events.
+ *      invoked, except for ass_track_set_feature, ass_flush_events and
+ *      ass_track_events_modified.
  *  - After the first call to ass_render_frame, existing array members
  *    (e.g. members of events) and non-array track fields (e.g. PlayResX
  *    or event_format) must not be modified. Adding new members to arrays

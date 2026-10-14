@@ -68,6 +68,13 @@ struct parser_priv {
 
     long long prune_delay;
     long long prune_next_ts;
+
+    // [min Start, max Start + Duration] of each block of EVENT_BLOCK_SIZE
+    // consecutive events, used by ass_render_frame to skip inactive events
+    long long *event_block_start;
+    long long *event_block_end;
+    int event_block_cap;    // allocated size in blocks
+    int event_blocks_valid; // summaries are current for events [0, valid)
 };
 
 #endif /* LIBASS_PRIV_H */

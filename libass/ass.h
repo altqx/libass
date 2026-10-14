@@ -805,6 +805,45 @@ void ass_configure_prune(ASS_Track *track, long long delay);
 void ass_flush_events(ASS_Track *track);
 
 /**
+ * \brief Notify libass of manual changes to the event list.
+ * \param track track
+ * \param first_eid lowest id of the changed events
+ *
+ * Fork extension, not available in upstream libass; its presence is
+ * indicated by LIBASS_HAS_TRACK_EVENTS_MODIFIED.
+ *
+ * ass_render_frame keeps a per-track summary of event timing which lets it
+ * skip events that are not displayed at the requested time. Changes made
+ * through the libass API (ass_alloc_event, ass_free_event, ass_process_data,
+ * ass_process_chunk, ass_flush_events, ass_prune_events, ...) are tracked
+ * automatically, as is appending events by hand and raising n_events.
+ * ass_free_event(track, eid) treats all events from eid on as changed, so
+ * removing events with it needs no further notification, even if later
+ * events are moved down to fill the gap and new ones are appended after.
+ * Other manual changes after the first call to ass_render_frame on this
+ * track are not tracked, so this function must be called after
+ *   - modifying Start or Duration of an event with id >= first_eid, or
+ *   - changing which event is stored at an id >= first_eid other than as
+ *     described above, e.g. inserting events in the middle or reordering,
+ * and before the next ass_render_frame call on this track. Otherwise
+ * affected events may not be displayed when they should be.
+ * Calling this function for other changes, or more often than necessary,
+ * is harmless; ass_track_events_modified(track, 0) invalidates everything
+ * and makes the next ass_render_frame rebuild the summary in O(n_events).
+ * Negative first_eid is treated as 0.
+ *
+ * The summary is stored in the track and updated by ass_render_frame after
+ * events were added or changed, so a track must not be rendered by several
+ * threads at once until it has been rendered once after the last change.
+ *
+ * The GENERAL NOTE in ass_types.h still does not allow modifying existing
+ * events after rendering started; this function only keeps event selection
+ * in ass_render_frame correct for API users who do it anyway.
+ */
+#define LIBASS_HAS_TRACK_EVENTS_MODIFIED 1
+void ass_track_events_modified(ASS_Track *track, int first_eid);
+
+/**
  * \brief Read subtitles from file.
  * \param library library handle
  * \param fname file name

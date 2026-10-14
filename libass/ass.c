@@ -75,7 +75,10 @@ void ass_free_track(ASS_Track *track)
         free(track->parser_priv->read_order_bitmap);
         free(track->parser_priv->fontname);
         free(track->parser_priv->fontdata);
+        free(track->parser_priv->event_block_start);
+        free(track->parser_priv->event_block_end);
         free(track->parser_priv);
+        track->parser_priv = NULL;
     }
     free(track->style_format);
     free(track->event_format);
@@ -137,6 +140,8 @@ int ass_alloc_event(ASS_Track *track)
 
     eid = track->n_events++;
     memset(track->events + eid, 0, sizeof(ASS_Event));
+    // the slot may have been in use before n_events was lowered
+    ass_track_events_modified(track, eid);
     return eid;
 }
 
@@ -148,6 +153,8 @@ void ass_free_event(ASS_Track *track, int eid)
     free(event->Effect);
     free(event->Text);
     free(event->render_priv);
+    // ids from eid on are about to be reused or refilled
+    ass_track_events_modified(track, eid);
 }
 
 void ass_free_style(ASS_Track *track, int sid)
@@ -1379,6 +1386,13 @@ void ass_flush_events(ASS_Track *track)
     free(track->parser_priv->read_order_bitmap);
     track->parser_priv->read_order_bitmap = NULL;
     track->parser_priv->read_order_elems = 0;
+}
+
+void ass_track_events_modified(ASS_Track *track, int first_eid)
+{
+    ASS_ParserPriv *parser_priv = track->parser_priv;
+    if (parser_priv && first_eid < parser_priv->event_blocks_valid)
+        parser_priv->event_blocks_valid = FFMAX(first_eid, 0);
 }
 
 void ass_configure_prune(ASS_Track *track, long long delay)
