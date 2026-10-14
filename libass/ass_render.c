@@ -3494,10 +3494,16 @@ ASS_Image *ass_render_frame(ASS_Renderer *priv, ASS_Track *track,
         if ((event->Start <= now)
             && (now < (event->Start + event->Duration))) {
             if (cnt >= priv->eimg_size) {
+                EventImages *eimg = ass_realloc_array(priv->eimg,
+                                                      priv->eimg_size + 100,
+                                                      sizeof(*eimg));
+                if (!eimg) {
+                    ass_msg(priv->library, MSGL_ERR,
+                            "Failed to allocate event images");
+                    break;
+                }
+                priv->eimg = eimg;
                 priv->eimg_size += 100;
-                priv->eimg =
-                    realloc(priv->eimg,
-                            priv->eimg_size * sizeof(EventImages));
             }
             if (ass_render_event(&priv->state, event, priv->eimg + cnt))
                 cnt++;
