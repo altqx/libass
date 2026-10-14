@@ -890,12 +890,14 @@ char *ass_font_select(ASS_FontSelector *priv,
     unsigned bold = font->desc.bold;
     unsigned italic = font->desc.italic;
     ASS_FontProvider *default_provider = priv->default_provider;
+    ASS_FontStage stage = ASS_FONT_STAGE_REQUESTED;
 
     if (family && *family)
         res = select_font(priv, family, false, bold, italic, index,
                 postscript_name, uid, data, code);
 
     if (!res && priv->family_default) {
+        stage = ASS_FONT_STAGE_DEFAULT_FAMILY;
         res = select_font(priv, priv->family_default, false, bold,
                 italic, index, postscript_name, uid, data, code);
         if (res)
@@ -913,6 +915,7 @@ char *ass_font_select(ASS_FontSelector *priv,
                 default_provider->priv, priv->library, search_family, code);
 
         if (fallback_family) {
+            stage = ASS_FONT_STAGE_FALLBACK;
             res = select_font(priv, fallback_family, true, bold, italic,
                     index, postscript_name, uid, data, code);
             free(fallback_family);
@@ -920,6 +923,7 @@ char *ass_font_select(ASS_FontSelector *priv,
     }
 
     if (!res && priv->path_default) {
+        stage = ASS_FONT_STAGE_DEFAULT_PATH;
         res = priv->path_default;
         *index = priv->index_default;
         ass_msg(priv->library, MSGL_WARN, "fontselect: Using default font: "
@@ -932,7 +936,26 @@ char *ass_font_select(ASS_FontSelector *priv,
         ass_msg(priv->library, MSGL_INFO,
                 "fontselect: (%s, %d, %d) -> %s, %d, %s", family, bold,
                 italic, res, *index, *postscript_name ? *postscript_name : "(none)");
-    else
+    if (res && priv->library->font_diagnostics.selected) {
+        ASS_FontSelection selection = {
+            .stage = stage,
+            .requested_family = family,
+            .bold = bold,
+            .italic = italic,
+            .code = code,
+            .path = data->func ? NULL : res,
+            .display_name = res,
+            .postscript_name = *postscript_name,
+            .index = *index,
+            .uid = stage == ASS_FONT_STAGE_DEFAULT_PATH ? -1 : *uid,
+            .embedded = data->func == get_data_embedded,
+            .read = data->func,
+            .read_data = data->priv,
+        };
+        priv->library->font_diagnostics.selected(
+            priv->library->font_diagnostics_data, &selection);
+    }
+    if (!res)
         ass_msg(priv->library, MSGL_WARN,
                 "fontselect: failed to find any fallback with glyph 0x%X for font: "
                 "(%s, %d, %d)", code, family, bold, italic);

@@ -27,6 +27,7 @@
 #include FT_TRUETYPE_TABLES_H
 #include FT_OUTLINE_H
 #include FT_TRUETYPE_IDS_H
+#include FT_MULTIPLE_MASTERS_H
 #include FT_TYPE1_TABLES_H
 #include <limits.h>
 
@@ -533,6 +534,24 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
     if (!face)
         return -1;
 
+    if (font->library->font_diagnostics.face_opened) {
+        double coords[16];
+        int n_coords = 0;
+        FT_MM_Var *mm = NULL;
+        if (FT_HAS_MULTIPLE_MASTERS(face) && !FT_Get_MM_Var(face, &mm)) {
+            FT_Fixed fixed[16];
+            n_coords = FFMIN((int) mm->num_axis, 16);
+            if (FT_Get_Var_Design_Coordinates(face, n_coords, fixed))
+                n_coords = 0;
+            for (int c = 0; c < n_coords; c++)
+                coords[c] = fixed[c] / 65536.0;
+            FT_Done_MM_Var(font->ftlibrary, mm);
+        }
+        font->library->font_diagnostics.face_opened(
+            font->library->font_diagnostics_data, uid, face->face_index,
+            face->num_faces, FT_Get_Postscript_Name(face), n_coords, coords);
+    }
+
     ass_charmap_magic(font->library, face);
     set_font_metrics(face);
 
@@ -763,6 +782,11 @@ int ass_font_get_index(ASS_FontSelector *fontsel, ASS_Font *font,
                         font->desc.italic);
             }
         }
+        // No face has it: either the added face lacks it or none was found.
+        if (index == 0 && font->library->font_diagnostics.glyph_missing)
+            font->library->font_diagnostics.glyph_missing(
+                font->library->font_diagnostics_data, symbol,
+                font->desc.family.str, font->desc.bold, font->desc.italic);
     }
 
     // FIXME: make sure we have a valid face_index. this is a HACK.
@@ -804,11 +828,17 @@ bool ass_font_get_glyph(ASS_Font *font, int face_index, int index,
     }
 
     FT_Long style_flags = ass_face_get_style_flags(face);
-    if (!(style_flags & FT_STYLE_FLAG_ITALIC) && (font->desc.italic > 55))
+    int italicize = !(style_flags & FT_STYLE_FLAG_ITALIC) && (font->desc.italic > 55);
+    int embolden = !(style_flags & FT_STYLE_FLAG_BOLD) &&
+        font->desc.bold > ass_face_get_weight(face) + 150;
+    if (italicize)
         ass_glyph_italicize(face);
-    if (!(style_flags & FT_STYLE_FLAG_BOLD) &&
-        font->desc.bold > ass_face_get_weight(face) + 150)
+    if (embolden)
         ass_glyph_embolden(face->glyph);
+    if ((italicize || embolden) && font->library->font_diagnostics.glyph_simulated)
+        font->library->font_diagnostics.glyph_simulated(
+            font->library->font_diagnostics_data, font->faces_uid[face_index],
+            index, embolden, italicize);
     return true;
 }
 

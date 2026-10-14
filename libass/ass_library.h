@@ -21,6 +21,7 @@
 
 #include <stdarg.h>
 
+#include "ass.h"
 #include "ass_filesystem.h"
 
 typedef struct {
@@ -38,6 +39,9 @@ struct ass_library {
     size_t num_fontdata;
     void (*msg_callback)(int, const char *, va_list, void *);
     void *msg_callback_data;
+
+    ASS_FontDiagnostics font_diagnostics;
+    void *font_diagnostics_data;
 };
 
 char *ass_load_file(struct ass_library *library, const char *fname, FileNameSource hint, size_t *bufsize);

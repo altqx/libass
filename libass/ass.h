@@ -24,7 +24,7 @@
 #include <stdarg.h>
 #include "ass_types.h"
 
-#define LIBASS_VERSION 0x01705010
+#define LIBASS_VERSION 0x01705020
 
 #ifdef __cplusplus
 extern "C" {
@@ -363,6 +363,82 @@ void ass_process_force_style(ASS_Track *track);
 void ass_set_message_cb(ASS_Library *priv, void (*msg_cb)
                         (int level, const char *fmt, va_list args, void *data),
                         void *data);
+
+/**
+ * Font diagnostics (fork extension, not available in upstream libass; its
+ * presence is indicated by LIBASS_HAS_FONT_DIAGNOSTICS).
+ *
+ * Reports which font files, faces and fallbacks the renderer actually uses,
+ * so that an application can verify font identity (for example, to collect
+ * the fonts a script needs) instead of trusting a name lookup. The hooks only
+ * observe; rendering is unchanged. The callbacks run during rendering, on the
+ * thread that renders; strings, the coords array and the read function are
+ * valid only for the duration of the call.
+ * Fonts and glyphs are cached by the renderer, so the callbacks report cache
+ * misses: a font is reported when a renderer first loads it. To observe
+ * everything a script uses, render it with a fresh renderer.
+ */
+#define LIBASS_HAS_FONT_DIAGNOSTICS 1
+#define ASS_FONT_DIAGNOSTICS_VERSION 1
+
+/**
+ * \brief How a font was selected.
+ */
+typedef enum {
+    ASS_FONT_STAGE_REQUESTED = 1,  // the requested family (or a provider substitution)
+    ASS_FONT_STAGE_DEFAULT_FAMILY, // the configured default family
+    ASS_FONT_STAGE_FALLBACK,       // the font provider's glyph fallback
+    ASS_FONT_STAGE_DEFAULT_PATH,   // the configured default font file
+} ASS_FontStage;
+
+/**
+ * \brief A font chosen by the font selector.
+ */
+typedef struct ass_font_selection {
+    ASS_FontStage stage;
+    const char *requested_family;   // may be NULL or empty
+    unsigned bold, italic;
+    uint32_t code;                  // the character that needed a face (0: none)
+    const char *path;               // NULL when the bytes come from a stream
+    const char *display_name;
+    const char *postscript_name;    // may be NULL
+    int index;                      // face index requested from the file or stream
+    int uid;                        // selector-local face id; -1 for the default path
+    int embedded;                   // memory font (ass_add_font or extracted attachment)
+    // Reads stream bytes; with data NULL, returns the stream size. NULL for files.
+    size_t (*read)(void *read_data, unsigned char *data, size_t offset, size_t len);
+    void *read_data;
+} ASS_FontSelection;
+
+/**
+ * \brief Font diagnostics callbacks. Any callback may be NULL.
+ */
+typedef struct ass_font_diagnostics {
+    int version; // must be ASS_FONT_DIAGNOSTICS_VERSION
+    // When the font selector chose a font for a family or a character.
+    void (*selected)(void *data, const ASS_FontSelection *selection);
+    // After FreeType opened a selection: the actual face index (named-instance
+    // bits included), the file's face count and the design coordinates, if any.
+    void (*face_opened)(void *data, int uid, long face_index, long num_faces,
+                        const char *postscript_name, int n_coords, const double *coords);
+    // When a glyph is synthetically emboldened or slanted.
+    void (*glyph_simulated)(void *data, int uid, unsigned glyph_index,
+                            int embolden, int italicize);
+    // When no available face has the character.
+    void (*glyph_missing)(void *data, uint32_t code, const char *family,
+                          unsigned bold, unsigned italic);
+} ASS_FontDiagnostics;
+
+/**
+ * \brief Install font diagnostics callbacks.
+ * \param priv library handle
+ * \param callbacks callbacks to install; the struct is copied. NULL, or a
+ * version other than ASS_FONT_DIAGNOSTICS_VERSION, removes them.
+ * \param data additional data, will be passed to the callbacks
+ */
+void ass_set_font_diagnostics(ASS_Library *priv,
+                              const ASS_FontDiagnostics *callbacks,
+                              void *data);
 
 /**
  * \brief Initialize the renderer.

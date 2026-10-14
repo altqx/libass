@@ -33,9 +33,10 @@ Fork-only API (declared in `libass/ass.h`):
 
 - `ass_track_events_modified(track, first_eid)`, macro `LIBASS_HAS_TRACK_EVENTS_MODIFIED`. Events changed through the libass API, or appended by hand, are tracked automatically. **If your application writes `Start`/`Duration` of existing events, or inserts or reorders events after rendering has started, call this before the next `ass_render_frame`, or the changed lines may not be shown.** A track must not be rendered by several threads at once until it has been rendered once after a change.
 - `ass_frame_pack_atlas(renderer, images, max_size, padding, max_pages)` and `ass_frame_atlas_reset(renderer)`, macro `LIBASS_HAS_FRAME_ATLAS`. They pack a frame's bitmaps into R8 texture pages plus a 32-byte instance per image, so a GPU renderer can draw a frame with one upload and one instanced draw. Unchanged pixels and instances are reported, so they can be skipped.
+- `ass_set_font_diagnostics(library, callbacks, data)`, macro `LIBASS_HAS_FONT_DIAGNOSTICS`. Callbacks report which font files and faces the renderer selected (and at which fallback stage), the face index and variation coordinates FreeType opened, synthetic bold and italic, and characters no face covers, so an application can verify font identity instead of trusting a name lookup. Rendering is unchanged.
 - `ass_set_glyph_run_callback` is now exported from shared builds.
 
-`LIBASS_VERSION` is `0x01705010`. Upstream uses the same low-byte steps for its own API additions between releases, so detect fork features with the `LIBASS_HAS_*` macros, not with the version number.
+`LIBASS_VERSION` is `0x01705020`. Upstream uses the same low-byte steps for its own API additions between releases, so detect fork features with the `LIBASS_HAS_*` macros, not with the version number.
 
 Get it
 ======

@@ -159,6 +159,19 @@ void ass_set_message_cb(ASS_Library *priv,
     }
 }
 
+void ass_set_font_diagnostics(ASS_Library *priv,
+                              const ASS_FontDiagnostics *callbacks,
+                              void *data)
+{
+    if (callbacks && callbacks->version == ASS_FONT_DIAGNOSTICS_VERSION) {
+        priv->font_diagnostics = *callbacks;
+        priv->font_diagnostics_data = data;
+    } else {
+        memset(&priv->font_diagnostics, 0, sizeof(priv->font_diagnostics));
+        priv->font_diagnostics_data = NULL;
+    }
+}
+
 void *ass_malloc(size_t size)
 {
     return malloc(size);
