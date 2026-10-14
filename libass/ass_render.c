@@ -38,7 +38,7 @@
 #define MAX_GLYPHS_INITIAL 1024
 #define MAX_LINES_INITIAL 64
 #define MAX_BITMAPS_INITIAL 16
-#define MAX_SUB_BITMAPS_INITIAL 64
+#define MAX_BITMAP_REFS_INITIAL 64
 #define SUBPIXEL_MASK 63
 #define STROKER_PRECISION 16     // stroker error in integer units, unrelated to final accuracy
 #define RASTERIZER_PRECISION 16  // rasterizer spline approximation error in 1/64 pixel units
@@ -53,15 +53,17 @@ static bool text_info_init(TextInfo* text_info)
     text_info->max_bitmaps = MAX_BITMAPS_INITIAL;
     text_info->max_glyphs = MAX_GLYPHS_INITIAL;
     text_info->max_lines = MAX_LINES_INITIAL;
+    text_info->max_bitmap_refs = MAX_BITMAP_REFS_INITIAL;
     text_info->n_bitmaps = 0;
     text_info->combined_bitmaps = calloc(MAX_BITMAPS_INITIAL, sizeof(CombinedBitmapInfo));
     text_info->glyphs = calloc(MAX_GLYPHS_INITIAL, sizeof(GlyphInfo));
     text_info->event_text = calloc(MAX_GLYPHS_INITIAL, sizeof(FriBidiChar));
     text_info->breaks = malloc(MAX_GLYPHS_INITIAL);
     text_info->lines = calloc(MAX_LINES_INITIAL, sizeof(LineInfo));
+    text_info->bitmap_refs = malloc(MAX_BITMAP_REFS_INITIAL * sizeof(BitmapRef));
 
     if (!text_info->combined_bitmaps || !text_info->glyphs || !text_info->lines ||
-        !text_info->breaks || !text_info->event_text)
+        !text_info->breaks || !text_info->event_text || !text_info->bitmap_refs)
         return false;
 
     return true;
@@ -74,6 +76,7 @@ static void text_info_done(TextInfo* text_info)
     free(text_info->breaks);
     free(text_info->lines);
     free(text_info->combined_bitmaps);
+    free(text_info->bitmap_refs);
 }
 
 static bool render_context_init(RenderContext *state, ASS_Renderer *priv)
@@ -2458,6 +2461,7 @@ static void render_and_combine_glyphs(RenderContext *state,
     int left = render_priv->settings.left_margin;
     device_x = (device_x - left) * render_priv->par_scale_x + left;
     unsigned nb_bitmaps = 0;
+    size_t nb_refs = 0;
     bool new_run = true;
     CombinedBitmapInfo *combined_info = text_info->combined_bitmaps;
     CombinedBitmapInfo *current_info = NULL;
@@ -2533,12 +2537,8 @@ static void render_and_combine_glyphs(RenderContext *state,
                 current_info->bm = current_info->bm_o = current_info->bm_s = NULL;
                 current_info->image = NULL;
 
-                current_info->bitmap_count = current_info->max_bitmap_count = 0;
-                current_info->bitmaps = malloc(MAX_SUB_BITMAPS_INITIAL * sizeof(BitmapRef));
-                if (!current_info->bitmaps)
-                    continue;
-
-                current_info->max_bitmap_count = MAX_SUB_BITMAPS_INITIAL;
+                current_info->bitmap_count = 0;
+                current_info->first_bitmap = nb_refs;
 
                 nb_bitmaps++;
                 new_run = false;
@@ -2554,17 +2554,20 @@ static void render_and_combine_glyphs(RenderContext *state,
             if (!info->bm && !info->bm_o)
                 continue;
 
-            if (current_info->bitmap_count >= current_info->max_bitmap_count) {
-                size_t new_size = 2 * current_info->max_bitmap_count;
-                if (!ASS_REALLOC_ARRAY(current_info->bitmaps, new_size))
+            if (nb_refs >= text_info->max_bitmap_refs) {
+                size_t new_size = 2 * text_info->max_bitmap_refs;
+                if (!ASS_REALLOC_ARRAY(text_info->bitmap_refs, new_size))
                     continue;
 
-                current_info->max_bitmap_count = new_size;
+                text_info->max_bitmap_refs = new_size;
             }
-            current_info->bitmaps[current_info->bitmap_count].bm   = info->bm;
-            current_info->bitmaps[current_info->bitmap_count].bm_o = info->bm_o;
-            current_info->bitmaps[current_info->bitmap_count].pos   = pos;
-            current_info->bitmaps[current_info->bitmap_count].pos_o = pos_o;
+            // runs are only ever appended to, so each one is contiguous
+            assert(nb_refs == current_info->first_bitmap + current_info->bitmap_count);
+            BitmapRef *ref = &text_info->bitmap_refs[nb_refs++];
+            ref->bm    = info->bm;
+            ref->bm_o  = info->bm_o;
+            ref->pos   = pos;
+            ref->pos_o = pos_o;
             current_info->bitmap_count++;
 
             current_info->x = FFMIN(current_info->x, pos.x);
@@ -2574,26 +2577,26 @@ static void render_and_combine_glyphs(RenderContext *state,
 
     for (int i = 0; i < nb_bitmaps; i++) {
         CombinedBitmapInfo *info = &combined_info[i];
-        if (!info->bitmap_count) {
-            free(info->bitmaps);
+        if (!info->bitmap_count)
             continue;
-        }
 
         if (info->effect_type == EF_KARAOKE_KF)
             info->effect_timing = lround(d6_to_double(info->leftmost_x) +
                 d6_to_double(info->effect_timing) * render_priv->par_scale_x);
 
+        // bitmap_refs no longer grows at this point, so the pointer stays valid
+        BitmapRef *bitmaps = text_info->bitmap_refs + info->first_bitmap;
         for (int j = 0; j < info->bitmap_count; j++) {
-            info->bitmaps[j].pos.x -= info->x;
-            info->bitmaps[j].pos.y -= info->y;
-            info->bitmaps[j].pos_o.x -= info->x;
-            info->bitmaps[j].pos_o.y -= info->y;
+            bitmaps[j].pos.x -= info->x;
+            bitmaps[j].pos.y -= info->y;
+            bitmaps[j].pos_o.x -= info->x;
+            bitmaps[j].pos_o.y -= info->y;
         }
 
         CompositeHashKey key;
         key.filter = info->filter;
         key.bitmap_count = info->bitmap_count;
-        key.bitmaps = info->bitmaps;
+        key.bitmaps = bitmaps;
         CompositeHashValue *val = ass_cache_get(render_priv->cache.composite_cache, &key, render_priv);
         if (!val)
             continue;

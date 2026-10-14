@@ -78,9 +78,9 @@ enum {
     FILTER_FILL_IN_BORDER = 0x10,
 };
 
-// ass_cache_get() takes ownership of the bitmaps array and either frees it
-// or persists it in the item key; individual bitmaps in the array behave
-// as documented in ass_cache_template.h
+// the caller keeps ownership of the bitmaps array: ass_cache_get() never
+// frees it and copies it into the item key on a cache miss; individual
+// bitmaps in the array behave as documented in ass_cache_template.h
 typedef struct {
     FilterDesc filter;
     size_t bitmap_count;

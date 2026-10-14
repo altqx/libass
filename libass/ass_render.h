@@ -109,8 +109,8 @@ typedef struct {
     // karaoke origin: screen coordinate of leftmost post-transform control point x in subpixels
     int32_t leftmost_x;
 
-    size_t bitmap_count, max_bitmap_count;
-    BitmapRef *bitmaps;
+    size_t bitmap_count;
+    size_t first_bitmap;        // index of first BitmapRef in TextInfo.bitmap_refs
 
     int x, y;
     Bitmap *bm, *bm_o, *bm_s;   // glyphs, outline, shadow bitmaps
@@ -200,6 +200,8 @@ typedef struct {
     int max_glyphs;
     int max_lines;
     unsigned max_bitmaps;
+    BitmapRef *bitmap_refs;     // glyph bitmaps of all combined bitmaps, contiguous per run
+    size_t max_bitmap_refs;
 } TextInfo;
 
 #include "ass_shaper.h"
