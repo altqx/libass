@@ -54,6 +54,7 @@ struct ass_shaper {
     FriBidiCharType *ctypes;
     FriBidiLevel *emblevels;
     FriBidiStrIndex *cmap;
+    FriBidiJoiningType *joins;
     FriBidiParType *pbase_dir;
     FriBidiParType base_direction;
 
@@ -105,7 +106,8 @@ static bool check_codepoint_allocations(ASS_Shaper *shaper, size_t new_size)
             (shaper->bidi_brackets && !ASS_REALLOC_ARRAY(shaper->btypes, new_size)) ||
 #endif
             !ASS_REALLOC_ARRAY(shaper->emblevels, new_size) ||
-            !ASS_REALLOC_ARRAY(shaper->cmap, new_size))
+            !ASS_REALLOC_ARRAY(shaper->cmap, new_size) ||
+            !ASS_REALLOC_ARRAY(shaper->joins, new_size))
             return false;
         shaper->n_codepoints = new_size;
     }
@@ -138,6 +140,7 @@ void ass_shaper_free(ASS_Shaper *shaper)
 #endif
     free(shaper->emblevels);
     free(shaper->cmap);
+    free(shaper->joins);
     free(shaper->pbase_dir);
     hb_font_funcs_destroy(shaper->font_funcs);
     hb_buffer_destroy(shaper->buf);
@@ -782,7 +785,7 @@ void ass_shaper_determine_script(ASS_Shaper *shaper, GlyphInfo *glyphs,
 static void shape_fribidi(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
 {
     int i;
-    FriBidiJoiningType *joins = calloc(len, sizeof(*joins));
+    FriBidiJoiningType *joins = shaper->joins;
 
     // shape on codepoint level
     fribidi_get_joining_types(shaper->event_text, len, joins);
@@ -799,8 +802,6 @@ static void shape_fribidi(ASS_Shaper *shaper, GlyphInfo *glyphs, size_t len)
         if (info->glyph_index)
             info->glyph_index = FT_Get_Char_Index(face, info->glyph_index);
     }
-
-    free(joins);
 }
 
 /**
