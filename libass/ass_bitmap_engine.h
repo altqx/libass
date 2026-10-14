@@ -129,7 +129,9 @@ FillHalfplaneTileFunc ass_fill_halfplane_tile32_wasm;
 FillGenericTileFunc   ass_fill_generic_tile32_wasm;
 MergeTileFunc         ass_merge_tile32_wasm;
 BitmapBlendFunc       ass_add_bitmaps_wasm, ass_imul_bitmaps_wasm;
+BitmapBlendFunc       ass_fix_outline_wasm;
 BitmapMulFunc         ass_mul_bitmaps_wasm;
+BitmapShiftFunc       ass_shift_horz_wasm, ass_shift_vert_wasm;
 BeBlurFunc            ass_be_blur_wasm;
 Convert8to16Func      ass_stripe_unpack16_wasm;
 Convert16to8Func      ass_stripe_pack16_wasm;
@@ -143,6 +145,9 @@ FilterFunc            ass_expand_horz16_wasm, ass_expand_vert16_wasm;
 #define ENGINE_WASM_add_bitmaps     ass_add_bitmaps_wasm
 #define ENGINE_WASM_imul_bitmaps    ass_imul_bitmaps_wasm
 #define ENGINE_WASM_mul_bitmaps     ass_mul_bitmaps_wasm
+#define ENGINE_WASM_fix_outline     ass_fix_outline_wasm
+#define ENGINE_WASM_shift_horz      ass_shift_horz_wasm
+#define ENGINE_WASM_shift_vert      ass_shift_vert_wasm
 #define ENGINE_WASM_be_blur         ass_be_blur_wasm
 #define ENGINE_WASM_stripe_unpack   ass_stripe_unpack16_wasm
 #define ENGINE_WASM_stripe_pack     ass_stripe_pack16_wasm

@@ -216,7 +216,7 @@ void ass_fix_outline(const BitmapEngine *engine, Bitmap *bm_g, Bitmap *bm_o)
     const uint8_t *g = bm_g->buffer + (t - bm_g->top) * bm_g->stride + (l - bm_g->left);
     uint8_t *o = bm_o->buffer + (t - bm_o->top) * bm_o->stride + (l - bm_o->left);
 
-    engine->fix_outline(o, bm_o->stride, g, bm_g->stride, r - l, b - t);
+    ENGINE_CALL(engine, fix_outline, o, bm_o->stride, g, bm_g->stride, r - l, b - t);
 }
 
 /**
@@ -233,9 +233,9 @@ void ass_shift_bitmap(const BitmapEngine *engine, Bitmap *bm,
 
     // Shift in x direction
     if (shift_x && bm->w > 1)
-        engine->shift_horz(bm->buffer, bm->stride, bm->w, bm->h, shift_x);
+        ENGINE_CALL(engine, shift_horz, bm->buffer, bm->stride, bm->w, bm->h, shift_x);
 
     // Shift in y direction
     if (shift_y && bm->h > 1)
-        engine->shift_vert(bm->buffer, bm->stride, bm->w, bm->h, shift_y);
+        ENGINE_CALL(engine, shift_vert, bm->buffer, bm->stride, bm->w, bm->h, shift_y);
 }
