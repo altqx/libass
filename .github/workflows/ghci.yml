@@ -258,6 +258,16 @@ jobs:
               ;;
           esac
 
+      - name: check libass.sym against ass.h and the shared library
+        if: startsWith(matrix.os, 'ubuntu-')
+        run: |
+          if [ -f libass/.libs/libass.so ] ; then
+            CC="${{ matrix.cc }}" .github/scripts/check-exports.sh libass/.libs/libass.so
+          else
+            echo "No shared library was built; checking ass.h only."
+            CC="${{ matrix.cc }}" .github/scripts/check-exports.sh
+          fi
+
       - name: run tests
         if: matrix.skip_tests != 'yes'
         run: |
