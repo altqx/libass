@@ -418,7 +418,8 @@ typedef struct ass_font_diagnostics {
     // When the font selector chose a font for a family or a character.
     void (*selected)(void *data, const ASS_FontSelection *selection);
     // After FreeType opened a selection: the actual face index (named-instance
-    // bits included), the file's face count and the design coordinates, if any.
+    // bits included), the file's face count and the design coordinates, if any
+    // (coordinates need FreeType 2.9 or newer; n_coords is 0 otherwise).
     void (*face_opened)(void *data, int uid, long face_index, long num_faces,
                         const char *postscript_name, int n_coords, const double *coords);
     // When a glyph is synthetically emboldened or slanted.

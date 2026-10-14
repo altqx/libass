@@ -537,6 +537,8 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
     if (font->library->font_diagnostics.face_opened) {
         double coords[16];
         int n_coords = 0;
+#if FREETYPE_MAJOR > 2 || (FREETYPE_MAJOR == 2 && FREETYPE_MINOR >= 9)
+        // FT_Get_Var_Design_Coordinates needs 2.7.1, FT_Done_MM_Var 2.9
         FT_MM_Var *mm = NULL;
         if (FT_HAS_MULTIPLE_MASTERS(face) && !FT_Get_MM_Var(face, &mm)) {
             FT_Fixed fixed[16];
@@ -547,6 +549,7 @@ static int add_face(ASS_FontSelector *fontsel, ASS_Font *font, uint32_t ch)
                 coords[c] = fixed[c] / 65536.0;
             FT_Done_MM_Var(font->ftlibrary, mm);
         }
+#endif
         font->library->font_diagnostics.face_opened(
             font->library->font_diagnostics_data, uid, face->face_index,
             face->num_faces, FT_Get_Postscript_Name(face), n_coords, coords);
